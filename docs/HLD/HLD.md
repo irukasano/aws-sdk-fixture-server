@@ -1,0 +1,1575 @@
+# AWS SDK Fixture Server
+
+## High Level Design
+
+## 1. Overview
+
+本システムは、ローカル開発・結合テスト向けの **AWS SDK-compatible Fixture Server** を提供する。
+
+AWSサービスそのものをエミュレートすることは目的としない。
+
+各言語のAWS SDKから送信されたHTTPリクエストを受信し、テスト実行時に指定された **Scenario Fixture** に基づいて、AWS SDK互換のHTTPレスポンスを返却する。
+
+主な用途は以下とする。
+
+* AWS SDKを含むアプリケーション結合テスト
+* AWS API境界のテスト
+* 正常系・異常系・リトライ処理のテスト
+* AWSサービスを利用するアプリケーションのローカル実行
+* CI環境における決定論的テスト
+
+本システムはAWSサービスの内部状態や内部ロジックを再現しない。
+
+---
+
+# 2. Goals
+
+## 2.1 Primary Goals
+
+以下を実現する。
+
+1. Dockerコンテナとして簡単に起動できる
+2. 各言語のAWS SDKからAWS APIと同様の方法でアクセスできる
+3. アプリケーション側はAWS SDKのendpoint overrideのみで利用できる
+4. Scenario FixtureをYAMLで定義できる
+5. テストケースごとにScenario Fixtureをロードして実行できる
+6. 正常レスポンスをScenario Fixtureとして定義し、AWS SDK互換レスポンスとして返却できる
+7. AWSエラーをScenario Fixtureとして定義し、AWS SDK互換エラーとして返却できる
+8. 同一APIへの連続呼び出しに異なるレスポンスを返却できる
+9. 呼び出されたAWS APIを記録できる
+10. 想定したAWS API呼び出しが行われたことを検証できる
+11. Scenario Fixtureに定義されていない想定外API呼び出しを検出できる
+
+---
+
+# 3. Non-Goals
+
+以下は本システムでは実装しない。
+
+* AWSサービス内部ロジックの再現
+* AWSサービス状態の完全な保持
+* IAM Policy評価
+* AWS Network / VPC挙動の再現
+* eventual consistencyの再現
+* AWSサービス間連携の自動再現
+* SQS visibility timeout等のサービス固有内部挙動
+* S3の実ストレージとしての動作
+* Cognito SRP認証の完全再現
+* Cognito MFAの完全再現
+* Cognito Hosted UIの再現
+* AWS Consoleの再現
+* LocalStack互換性
+* AWSインフラ構成そのものの検証
+
+本システムの位置付けは以下とする。
+
+> This server does not emulate AWS services.
+> It provides deterministic AWS SDK-compatible request/response fixtures.
+
+---
+
+# 4. Target Architecture
+
+```text
++-------------------------+
+| Application             |
+|                         |
+| AWS SDK                 |
++-----------+-------------+
+            |
+            | AWS HTTP Request
+            v
++-------------------------+
+| AWS Fixture Server      |
+|                         |
+| Request Router          |
+|       |                 |
+|       v                 |
+| Protocol Decoder        |
+|       |                 |
+|       v                 |
+| Scenario Matcher        |
+|       |                 |
+|       v                 |
+| Response Builder        |
+|       |                 |
+|       v                 |
+| Protocol Encoder        |
++-----------+-------------+
+            |
+            | AWS-compatible
+            | HTTP Response
+            v
+         AWS SDK
+```
+
+Scenario FixtureはFixture Server本体と分離する。
+
+```text
+AWS Fixture Server
+        +
+Project-specific Scenario Fixtures
+```
+
+例:
+
+```text
+project/
+  docker-compose.yml
+
+  tests/
+    aws/
+      scenarios/
+        happy-path.yml
+        secret-not-found.yml
+        s3-not-found.yml
+        sqs-throttling.yml
+```
+
+---
+
+# 5. Core Design Principles
+
+## 5.1 Stateless by Default
+
+AWSサービスの状態を内部で再現しない。
+
+例えばS3について、以下のようなサービスエミュレーションは原則行わない。
+
+```text
+PutObject
+↓
+Fixture Server内部ストレージへ保存
+↓
+GetObject
+↓
+保存済みObjectを返却
+```
+
+代わりに、
+
+```text
+AWS Request
+↓
+Scenario Match
+↓
+Configured Response
+```
+
+のみを実行する。
+
+Sequence Response等、テスト実行のために必要な最小限の一時状態のみ保持する。
+
+---
+
+## 5.2 Scenario-driven
+
+AWS APIの結果はScenario Fixtureによって決定する。
+
+同一Scenarioに対して決定論的な結果を返却できることを重視する。
+
+---
+
+## 5.3 AWS SDK Boundary Compatibility
+
+AWSサービスそのものの互換性ではなく、以下の境界が成立することを保証対象とする。
+
+```text
+Application
+    ↓
+AWS SDK
+    ↓
+AWS-compatible HTTP Request
+    ↓
+Fixture Server
+    ↓
+AWS-compatible HTTP Response
+    ↓
+AWS SDK deserialize
+    ↓
+Application
+```
+
+---
+
+## 5.4 Explicit Failure
+
+Scenario Fixtureに一致しないAWS APIが呼び出された場合、暗黙の成功レスポンスを返さない。
+
+例:
+
+```text
+UNEXPECTED_AWS_REQUEST
+
+service: s3
+operation: ListBuckets
+```
+
+テスト時にはfail-fastを基本とする。
+
+---
+
+## 5.5 Scenario is Project-owned
+
+Scenario FixtureはFixture Server本体には含めない。
+
+Fixture ServerはAWS SDK互換境界を提供し、各プロジェクトがテスト対象に応じたScenario Fixtureを管理する。
+
+---
+
+# 6. Major Components
+
+## 6.1 HTTP Server
+
+責務:
+
+* HTTP request受付
+* request headers取得
+* path/query取得
+* request body取得
+* AWS互換HTTP response返却
+
+初期実装では単一HTTPポートを使用する。
+
+Default:
+
+```text
+4566
+```
+
+---
+
+## 6.2 AWS Request Router
+
+AWS SDKから受信したHTTP Requestから以下を識別する。
+
+```text
+service
+operation
+protocol
+```
+
+例:
+
+Secrets Manager:
+
+```text
+x-amz-target:
+  secretsmanager.GetSecretValue
+```
+
+S3:
+
+```text
+HTTP Method
+Path
+Query Parameter
+```
+
+等からoperationを解決する。
+
+---
+
+## 6.3 Protocol Adapter
+
+AWSサービス間のwire protocol差異を吸収する。
+
+初期対応候補:
+
+```text
+aws-json-1.0
+aws-json-1.1
+rest-json
+rest-xml
+```
+
+責務:
+
+```text
+HTTP Request
+    ↓
+Normalized Request
+```
+
+および、
+
+```text
+Normalized Response
+    ↓
+AWS-compatible HTTP Response
+```
+
+---
+
+## 6.4 Scenario Loader
+
+Scenario FixtureをYAMLからロードする。
+
+責務:
+
+* YAML parse
+* Scenario validation
+* Matcher definition生成
+* Response definition生成
+* Sequence初期化
+* 現在のScenario切替
+
+Scenario Loaderは起動時だけではなく、**テスト実行時にもScenarioを切り替えられること**を必須とする。
+
+---
+
+## 6.5 Scenario Matcher
+
+Normalized RequestとScenario Fixtureを比較する。
+
+AWS SDKが生成する動的なHTTP要素ではなく、意味的なAWS API parameterを中心にmatchする。
+
+---
+
+## 6.6 Response Builder
+
+Scenario Fixtureで指定されたresponse/errorと共通defaultからNormalized Responseを生成する。
+
+---
+
+## 6.7 Request History
+
+Fixture Serverへ送信されたNormalized Requestを保持する。
+
+主用途:
+
+* API呼び出し確認
+* テスト失敗時の診断
+* expected request verification
+
+---
+
+# 7. Internal Normalized Request Model
+
+AWS protocol差異を内部表現へ変換する。
+
+例:
+
+```json
+{
+  "service": "secretsmanager",
+  "operation": "GetSecretValue",
+  "parameters": {
+    "SecretId": "test/db"
+  },
+  "http": {
+    "method": "POST",
+    "path": "/"
+  }
+}
+```
+
+S3:
+
+```json
+{
+  "service": "s3",
+  "operation": "GetObject",
+  "parameters": {
+    "Bucket": "test-bucket",
+    "Key": "foo.txt"
+  },
+  "http": {
+    "method": "GET",
+    "path": "/test-bucket/foo.txt"
+  }
+}
+```
+
+Scenario Matcherは可能な限りNormalized Requestのみを扱い、AWS wire protocolの詳細を意識しない。
+
+---
+
+# 8. Scenario Fixture Design
+
+## 8.1 Basic Structure
+
+```yaml
+name: happy-path
+
+responses:
+
+  - service: secretsmanager
+    operation: GetSecretValue
+
+    match:
+      SecretId: test/db
+
+    response:
+      Name: test/db
+      SecretString: |
+        {"host":"db","username":"test"}
+```
+
+---
+
+## 8.2 S3 Example
+
+```yaml
+name: s3-get-object
+
+responses:
+
+  - service: s3
+    operation: GetObject
+
+    match:
+      Bucket: test-bucket
+      Key: foo.txt
+
+    response:
+      body: |
+        hello world
+
+      headers:
+        Content-Type: text/plain
+        ETag: '"abc123"'
+```
+
+Scenario Fixtureには必要な差分だけを書くことを基本とする。
+
+AWS SDK互換性のために必要な定型header等はFixture Server側で補完する。
+
+---
+
+# 9. Response Defaults
+
+AWS SDK互換性に必要な定型HTTP responseはScenario Fixture側へ毎回記述しない。
+
+Fixture Server側でprotocol/service/operation単位のdefaultを持つ。
+
+例:
+
+```yaml
+service: secretsmanager
+protocol: aws-json-1.1
+
+defaults:
+
+  response:
+    headers:
+      Content-Type: application/x-amz-json-1.1
+      x-amzn-requestid: ${request_id}
+```
+
+S3:
+
+```yaml
+service: s3
+protocol: rest-xml
+
+defaults:
+
+  response:
+    headers:
+      x-amz-request-id: ${request_id}
+```
+
+マージ順序:
+
+```text
+Protocol Default
+      ↓
+Service Default
+      ↓
+Operation Default
+      ↓
+Scenario Fixture
+```
+
+Scenario Fixture側を最優先とする。
+
+---
+
+# 10. Error Response
+
+AWSエラーもScenario Fixtureとして定義可能とする。
+
+例:
+
+```yaml
+responses:
+
+  - service: secretsmanager
+    operation: GetSecretValue
+
+    match:
+      SecretId: missing-secret
+
+    error:
+      type: ResourceNotFoundException
+      message: Secret not found
+```
+
+Fixture Server側が対象protocolに応じてAWS SDKがdeserialize可能なHTTP responseへ変換する。
+
+例:
+
+```text
+HTTP 400
+Content-Type: application/x-amz-json-1.1
+```
+
+Body:
+
+```json
+{
+  "__type": "ResourceNotFoundException",
+  "message": "Secret not found"
+}
+```
+
+---
+
+# 11. Sequence Responses
+
+AWS SDKやアプリケーション側のretry処理をテストするため、同一requestに対して複数responseを順番に返却できること。
+
+例:
+
+```yaml
+responses:
+
+  - service: sqs
+    operation: SendMessage
+
+    match:
+      QueueUrl: "*"
+
+    sequence:
+
+      - error:
+          type: ThrottlingException
+          message: throttled
+
+      - error:
+          type: ThrottlingException
+          message: throttled
+
+      - response:
+          MessageId: test-message-001
+```
+
+挙動:
+
+```text
+1st call → ThrottlingException
+2nd call → ThrottlingException
+3rd call → Success
+```
+
+Sequence counterはScenario切替またはreset時に初期化する。
+
+---
+
+# 12. Scenario Loading and Test Execution
+
+Scenario FixtureはDocker起動時に固定するだけではなく、**テストケースごとにロードして実行できること**を必須とする。
+
+想定フロー:
+
+```text
+Fixture Server 起動
+        ↓
+Test Case A
+        ↓
+happy-path.yml load
+        ↓
+Test実行
+        ↓
+Fixture Server reset
+        ↓
+Test Case B
+        ↓
+secret-not-found.yml load
+        ↓
+Test実行
+```
+
+これにより、Fixture Serverコンテナ自体は複数テストケースで使い回す。
+
+---
+
+# 13. Test Control API
+
+テストコードからFixture Serverを制御するための最小限のControl APIを提供する。
+
+一般的な運用管理APIではなく、**テスト用Scenario制御API**として位置付ける。
+
+## 13.1 Load Scenario
+
+```http
+POST /__fixture/scenario
+```
+
+Request:
+
+```json
+{
+  "path": "/scenarios/secret-not-found.yml"
+}
+```
+
+処理:
+
+```text
+現在のScenario破棄
+↓
+指定Scenario読込
+↓
+Sequence counter初期化
+↓
+Request History初期化
+```
+
+Response:
+
+```json
+{
+  "scenario": "secret-not-found",
+  "loaded": true
+}
+```
+
+---
+
+## 13.2 Reset
+
+```http
+POST /__fixture/reset
+```
+
+以下を初期化する。
+
+```text
+current scenario runtime state
+sequence counters
+request history
+```
+
+Scenario定義そのものを保持するか破棄するかは実装時に決定するが、初期実装では保持してruntime stateのみresetする方式を推奨する。
+
+---
+
+## 13.3 Request History
+
+```http
+GET /__fixture/requests
+```
+
+例:
+
+```json
+[
+  {
+    "service": "secretsmanager",
+    "operation": "GetSecretValue",
+    "parameters": {
+      "SecretId": "test/db"
+    }
+  }
+]
+```
+
+テストコードからAPI呼び出し内容を検証できる。
+
+---
+
+## 13.4 Verification
+
+初期実装ではRequest Historyを取得してテスト側で検証できれば成立する。
+
+将来的には以下のような専用APIを追加してもよい。
+
+```http
+POST /__fixture/verify
+```
+
+例:
+
+```json
+{
+  "service": "s3",
+  "operation": "PutObject",
+  "match": {
+    "Bucket": "test",
+    "Key": "foo.txt"
+  },
+  "times": 1
+}
+```
+
+専用verification APIは初期必須要件とはしない。
+
+---
+
+# 14. Request Matching
+
+MatcherはHTTP request全体を厳密比較しない。
+
+通常、以下はmatch対象外とする。
+
+```text
+Authorization
+X-Amz-Date
+User-Agent
+Content-Length
+SDK version metadata
+Request ID
+```
+
+意味のあるAWS API parameterを中心に比較する。
+
+例:
+
+```yaml
+match:
+  Bucket: test
+  Key: foo.txt
+```
+
+Matcherの初期候補:
+
+```text
+exact
+wildcard
+contains
+regex
+optional
+```
+
+例:
+
+```yaml
+match:
+  QueueUrl: "*"
+
+  MessageBody:
+    contains: patientId
+```
+
+初期実装では複雑なmatcher DSLを作り込みすぎず、exact matchを中心に開始する。
+
+---
+
+# 15. Initial Target Services
+
+初期実装では以下を優先する。
+
+## 15.1 Secrets Manager
+
+初期Operation:
+
+```text
+GetSecretValue
+```
+
+追加候補:
+
+```text
+DescribeSecret
+PutSecretValue
+```
+
+---
+
+## 15.2 S3
+
+初期Operation:
+
+```text
+GetObject
+PutObject
+HeadObject
+```
+
+追加候補:
+
+```text
+DeleteObject
+ListObjectsV2
+```
+
+---
+
+## 15.3 SQS
+
+初期Operation:
+
+```text
+SendMessage
+```
+
+追加候補:
+
+```text
+ReceiveMessage
+DeleteMessage
+```
+
+---
+
+## 15.4 Bedrock Runtime
+
+Bedrock RuntimeもFixture方式の対象とする。
+
+初期対象は **非Streaming APIのみ** とする。
+
+初期候補:
+
+```text
+InvokeModel
+Converse
+```
+
+例:
+
+```yaml
+responses:
+
+  - service: bedrock-runtime
+    operation: Converse
+
+    match:
+      modelId: test-model
+
+    response:
+      output:
+        message:
+          role: assistant
+          content:
+            - text: fixture response
+```
+
+以下は初期対象外とする。
+
+```text
+ConverseStream
+InvokeModelWithResponseStream
+```
+
+Streaming APIはAWS EventStream等のprotocol対応が必要になるため、後続対応とする。
+
+---
+
+# 16. Later Target Services
+
+初期実装後の追加候補とする。
+
+```text
+SNS
+EventBridge
+Cognito User Pool API
+Cognito JWT/JWKS
+Bedrock Streaming API
+```
+
+---
+
+# 17. Cognito Support
+
+Cognitoは初期実装対象には含めず、後続対応とする。
+
+Cognito対応時は以下の2領域を分離する。
+
+## 17.1 Cognito AWS SDK API
+
+例:
+
+```text
+AdminGetUser
+AdminCreateUser
+AdminUpdateUserAttributes
+ListUsers
+InitiateAuth
+RespondToAuthChallenge
+```
+
+これらは通常のScenario Fixture方式で扱う。
+
+例:
+
+```yaml
+- service: cognito-idp
+  operation: AdminGetUser
+
+  match:
+    UserPoolId: ap-northeast-1_test
+    Username: user@example.com
+
+  response:
+    Username: user@example.com
+    Enabled: true
+    UserStatus: CONFIRMED
+```
+
+---
+
+## 17.2 Cognito JWT / JWKS
+
+アプリケーションがCognito JWTを検証する場合には、AWS SDK APIとは別にOIDC/JWT境界への対応が必要となる。
+
+将来対応候補:
+
+```text
+/.well-known/openid-configuration
+/.well-known/jwks.json
+```
+
+テスト用秘密鍵を利用し、以下を含むJWTを生成可能とする。
+
+```text
+iss
+sub
+exp
+iat
+token_use
+client_id / aud
+kid
+signature
+```
+
+---
+
+# 18. AWS SDK Configuration
+
+アプリケーション側ではAWS SDK実装そのものを変更しない。
+
+endpointのみFixture Serverへ向ける。
+
+例:
+
+```text
+AWS_ENDPOINT_URL=http://aws-fixture:4566
+```
+
+またはAWS SDKが対応している場合はサービス単位で指定する。
+
+例:
+
+```text
+AWS_ENDPOINT_URL_S3=http://aws-fixture:4566
+AWS_ENDPOINT_URL_SECRETS_MANAGER=http://aws-fixture:4566
+```
+
+ローカルテスト用Credential:
+
+```text
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_REGION=ap-northeast-1
+```
+
+Fixture Serverは初期実装ではCredentialの妥当性やIAM権限を評価しない。
+
+---
+
+# 19. Docker Execution
+
+Fixture ServerはDockerコンテナとしてローカル起動できること。
+
+配布方法やDocker Registryについては本HLDの対象外とする。
+
+想定Repository:
+
+```text
+aws-fixture-server/
+  Dockerfile
+  src/
+  defaults/
+  tests/
+```
+
+Build:
+
+```bash
+docker build -t aws-fixture-server .
+```
+
+Run:
+
+```bash
+docker run \
+  --rm \
+  -p 4566:4566 \
+  -v ./tests/aws/scenarios:/scenarios:ro \
+  aws-fixture-server
+```
+
+コンテナ起動後、各テストケースがControl APIを利用してScenario Fixtureをロードする。
+
+例:
+
+```text
+POST /__fixture/scenario
+```
+
+```json
+{
+  "path": "/scenarios/happy-path.yml"
+}
+```
+
+---
+
+# 20. Example docker-compose.yml
+
+```yaml
+services:
+
+  aws-fixture:
+    build:
+      context: ./aws-fixture-server
+
+    ports:
+      - "4566:4566"
+
+    volumes:
+      - ./tests/aws/scenarios:/scenarios:ro
+
+  app:
+    build: .
+
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: ap-northeast-1
+      AWS_ENDPOINT_URL: http://aws-fixture:4566
+
+    depends_on:
+      - aws-fixture
+```
+
+Test Runnerから、
+
+```text
+aws-fixture
+↓
+Scenario load
+↓
+app test
+↓
+Request verification
+```
+
+の順で実行する。
+
+---
+
+# 21. Repository Structure
+
+想定構成:
+
+```text
+aws-fixture-server/
+
+  src/
+
+    server/
+      http-server.*
+
+    router/
+      aws-router.*
+
+    protocols/
+      aws-json-1.0.*
+      aws-json-1.1.*
+      rest-json.*
+      rest-xml.*
+
+    services/
+      secretsmanager.*
+      s3.*
+      sqs.*
+      bedrock-runtime.*
+
+    scenario/
+      loader.*
+      matcher.*
+      sequence.*
+
+    response/
+      builder.*
+
+    fixture-control/
+      api.*
+
+    history/
+      request-history.*
+
+  defaults/
+    secretsmanager.yml
+    s3.yml
+    sqs.yml
+    bedrock-runtime.yml
+
+  tests/
+
+  Dockerfile
+
+  docker-compose.yml
+
+  README.md
+```
+
+---
+
+# 22. Smithy Integration
+
+将来的にはAWS Smithyモデルの利用を検討する。
+
+目的:
+
+```text
+service definition
+operation definition
+input shape
+output shape
+protocol metadata
+error definition
+```
+
+等をSmithyモデルから取得し、serviceごとの手動定義を減らす。
+
+想定:
+
+```text
+AWS Smithy Model
+       ↓
+Service Metadata
+       ↓
+Protocol Adapter
+       ↓
+Scenario Engine
+```
+
+ただし初期実装ではSmithyへの依存を必須としない。
+
+まず少数サービス・少数Operationを実装し、内部抽象化が妥当であることを確認する。
+
+---
+
+# 23. Test Strategy
+
+Fixture Server自身について以下をテストする。
+
+## 23.1 Unit Test
+
+```text
+Request routing
+Request normalization
+Scenario loading
+Scenario matching
+Response generation
+Sequence behavior
+Error generation
+Request history
+```
+
+---
+
+## 23.2 AWS SDK Compatibility Test
+
+実際のAWS SDKを使用してFixture Serverとの通信をテストする。
+
+最低限:
+
+```text
+JavaScript / TypeScript
+Python
+```
+
+追加候補:
+
+```text
+Go
+Java
+PHP
+```
+
+HTTP clientから直接Fixture Serverを呼び出すテストだけでは不十分とする。
+
+最低限、
+
+```text
+AWS SDK
+↓
+Fixture Server
+↓
+AWS SDK deserialize
+```
+
+までをCompatibility Testとして確認する。
+
+---
+
+# 24. Example Integration Test Flow
+
+```text
+docker compose up
+       ↓
+Fixture Server startup
+       ↓
+Test Case start
+       ↓
+Scenario Fixture load
+       ↓
+Application integration test
+       ↓
+Application
+       ↓
+AWS SDK
+       ↓
+Fixture Server
+       ↓
+Scenario Match
+       ↓
+Fixture Response
+       ↓
+AWS SDK
+       ↓
+Application Assertion
+       ↓
+Request History Verification
+       ↓
+Fixture Server Reset
+       ↓
+Next Test Case
+```
+
+---
+
+# 25. Initial Implementation Scope
+
+最初の実装では機能を限定する。
+
+## 25.1 Required Features
+
+```text
+Docker startup
+
+Scenario YAML loading
+
+Test-time Scenario switching
+
+Fixture Control API
+
+Request history
+
+Unexpected request detection
+
+Normal response
+
+AWS error response
+
+Sequence response
+```
+
+---
+
+## 25.2 Required AWS Operations
+
+### Secrets Manager
+
+```text
+GetSecretValue
+```
+
+### S3
+
+```text
+GetObject
+PutObject
+HeadObject
+```
+
+### SQS
+
+```text
+SendMessage
+```
+
+### Bedrock Runtime
+
+```text
+InvokeModel
+Converse
+```
+
+ただしBedrock Streaming APIは対象外。
+
+---
+
+# 26. Implementation Order
+
+## Step 1
+
+HTTP Server、Scenario Loader、Fixture Control APIを実装する。
+
+以下が成立すること。
+
+```text
+Fixture Server起動
+↓
+POST /__fixture/scenario
+↓
+Scenario YAMLロード
+```
+
+---
+
+## Step 2
+
+Secrets Manager `GetSecretValue` を実装する。
+
+最初の技術的成立条件:
+
+```text
+AWS SDK
+↓
+GetSecretValue
+↓
+Fixture Server
+↓
+Scenario Match
+↓
+AWS-compatible Response
+↓
+AWS SDK deserialize成功
+```
+
+---
+
+## Step 3
+
+AWS error responseを実装する。
+
+例:
+
+```text
+ResourceNotFoundException
+```
+
+AWS SDK側で適切なException / Errorとして認識されることを確認する。
+
+---
+
+## Step 4
+
+Request HistoryとUnexpected Request Detectionを実装する。
+
+---
+
+## Step 5
+
+S3を実装する。
+
+```text
+GetObject
+PutObject
+HeadObject
+```
+
+REST/XML系protocol処理を確認する。
+
+---
+
+## Step 6
+
+Sequence Responseを実装する。
+
+---
+
+## Step 7
+
+SQS `SendMessage` を実装する。
+
+---
+
+## Step 8
+
+Bedrock Runtimeの非Streaming APIを実装する。
+
+```text
+InvokeModel
+Converse
+```
+
+---
+
+# 27. Key Risks
+
+## 27.1 AWS Protocol Complexity
+
+AWSサービスごとにwire protocolが異なる。
+
+対策:
+
+```text
+AWS Service Emulatorを作らない
+Protocol Adapterを限定する
+対応Operationを明示する
+```
+
+---
+
+## 27.2 Fixture Complexity
+
+テストケースごとに巨大なFixtureを持つと管理不能になる可能性がある。
+
+対策:
+
+```text
+Scenario単位で管理
+共通defaultはFixture Server側で保持
+Scenarioには差分のみ定義
+```
+
+将来的にはScenario間のextends/include等も検討可能だが、初期実装で複雑な継承機構は必須としない。
+
+---
+
+## 27.3 AWS SDK Changes
+
+AWS SDK version更新によってHTTP requestの非本質的部分が変化する可能性がある。
+
+対策:
+
+以下は原則matcher対象としない。
+
+```text
+Authorization
+User-Agent
+Date
+SDK metadata
+Content-Length
+```
+
+意味的なAWS API parameterをmatch対象とする。
+
+---
+
+## 27.4 Accidental Emulator Growth
+
+S3内部保存、SQS queue state、IAM評価等を追加すると、AWS emulatorと同様の複雑性へ向かう。
+
+対策:
+
+以下を設計原則として維持する。
+
+> No AWS service state simulation.
+
+---
+
+## 27.5 Over-generalized Fixture DSL
+
+AWS protocolの全差異をYAMLだけで表現しようとすると、Fixture定義自体が複雑なプログラミング言語化する可能性がある。
+
+対策:
+
+```text
+YAML
+  = Scenario / Match / Expected Response
+
+Fixture Server Code
+  = AWS Protocol Handling
+```
+
+と責務を分離する。
+
+---
+
+# 28. Acceptance Criteria
+
+初期実装完了条件:
+
+1. DockerでFixture Serverを起動できる
+2. テストコードからScenario Fixtureをロードできる
+3. Scenario切替時にSequence/Historyを初期化できる
+4. AWS SDK for JavaScriptからSecrets Managerを呼び出せる
+5. `GetSecretValue` の正常レスポンスをScenario Fixtureで定義できる
+6. `ResourceNotFoundException` をScenario Fixtureで定義できる
+7. AWS SDK側で正常レスポンス・エラーともに正しくdeserializeされる
+8. S3 `GetObject` をAWS SDKから実行できる
+9. S3 `PutObject` requestをRequest Historyで確認できる
+10. SQS `SendMessage` をAWS SDKから実行できる
+11. Sequence Responseで一時エラー後の成功を表現できる
+12. Bedrock Runtime `InvokeModel` または `Converse` をFixture化できる
+13. Scenario Fixtureに存在しないAWS API呼び出しを検出できる
+14. Fixture Serverコンテナを再起動せず、複数テストケースでScenarioを切り替えて利用できる
+
+---
+
+# 29. Design Summary
+
+本システムはAWS Emulatorではない。
+
+設計の中心は以下とする。
+
+```text
+Application
+   ↓
+AWS SDK
+   ↓
+AWS-compatible HTTP boundary
+   ↓
+Normalized Request
+   ↓
+Scenario Matcher
+   ↓
+Scenario Fixture
+   ↓
+AWS-compatible HTTP Response
+   ↓
+AWS SDK
+```
+
+AWSサービス内部の挙動を再現するのではなく、
+
+```text
+Request
+   ↓
+Fixture Match
+   ↓
+Configured Response
+```
+
+に限定する。
+
+Scenario Fixtureはプロジェクト側で管理し、Fixture Serverコンテナはテストケース間で使い回す。
+
+各テストケースはControl APIを使用して、
+
+```text
+Scenario Load
+↓
+Test Execution
+↓
+Request Verification
+↓
+Reset
+```
+
+を行う。
+
+これにより、
+
+* 軽量
+* 高速
+* 決定論的
+* Dockerで簡単に利用可能
+* 言語非依存
+* AWS SDKそのものを含む結合テストが可能
+* テストケースごとに自由にAWS境界条件を切り替え可能
+
+なローカルAWS境界テスト基盤を実現する。
+
+# 30. 言語
+
+go 言語とする
+
