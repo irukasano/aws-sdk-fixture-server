@@ -207,6 +207,8 @@ operation: ListBuckets
 
 テスト時にはfail-fastを基本とする。
 
+Scenario Fixture に一致しない AWS リクエストは、対象サービスの protocol に応じた AWS 形式のエラー本文を HTTP `500` で返す。エラーコードは `UNEXPECTED_AWS_REQUEST` とし、AWS SDK がエラーとして deserialize できるようにする。
+
 ---
 
 ## 5.5 Scenario is Project-owned
@@ -236,6 +238,8 @@ Default:
 ```text
 4566
 ```
+
+待受ポートは `PORT` 環境変数で変更可能とし、未指定時は `4566` を使用する。
 
 ---
 
@@ -283,6 +287,15 @@ rest-json
 rest-xml
 ```
 
+初期対象 Operation の protocol は以下とする。
+
+| Service / Operation | Protocol |
+| --- | --- |
+| Secrets Manager `GetSecretValue` | aws-json-1.1 |
+| SQS `SendMessage` | aws-json-1.0 |
+| S3 `GetObject` / `PutObject` / `HeadObject` | rest-xml |
+| Bedrock Runtime `InvokeModel` / `Converse` | rest-json |
+
 責務:
 
 ```text
@@ -315,6 +328,8 @@ Scenario FixtureをYAMLからロードする。
 * 現在のScenario切替
 
 Scenario Loaderは起動時だけではなく、**テスト実行時にもScenarioを切り替えられること**を必須とする。
+
+Scenario YAML はロード時に厳格に検証する。未知のフィールド、未知の matcher、同一 response 定義における `response`・`error`・`sequence` の複数指定、または空の `sequence` はロードエラーとする。
 
 ---
 
@@ -435,6 +450,8 @@ Scenario Fixtureには必要な差分だけを書くことを基本とする。
 
 AWS SDK互換性のために必要な定型header等はFixture Server側で補完する。
 
+`response` および `sequence[].response` のフィールドは、対象 AWS API の出力 JSON と同じキー名で記述する。S3 の本文は `body`、追加 HTTP ヘッダーは `headers` で記述する。
+
 ---
 
 # 9. Response Defaults
@@ -484,6 +501,8 @@ Scenario Fixture
 
 Scenario Fixture側を最優先とする。
 
+defaults は Fixture Server に同梱する `defaults/*.yml` として管理する。Scenario Fixture は `/scenarios` から read-only でロードし、defaults とは別に扱う。マージ後は Scenario Fixture の値を最優先とする。
+
 ---
 
 # 10. Error Response
@@ -507,6 +526,15 @@ responses:
 ```
 
 Fixture Server側が対象protocolに応じてAWS SDKがdeserialize可能なHTTP responseへ変換する。
+
+`error.status` は任意で指定できる。指定がない場合の HTTP status は `400` とする。
+
+```yaml
+error:
+  type: ThrottlingException
+  message: throttled
+  status: 429
+```
 
 例:
 
@@ -565,6 +593,8 @@ responses:
 
 Sequence counterはScenario切替またはreset時に初期化する。
 
+すべての sequence 要素を返却した後は、最後の要素を以後の一致リクエストに対して継続して返す。
+
 ---
 
 # 12. Scenario Loading and Test Execution
@@ -600,6 +630,18 @@ Test実行
 テストコードからFixture Serverを制御するための最小限のControl APIを提供する。
 
 一般的な運用管理APIではなく、**テスト用Scenario制御API**として位置付ける。
+
+初期実装では Control API に認証を設けない。ローカルまたはテスト専用の Docker ネットワークでの利用を前提とし、AWS API と同じポートの `__fixture` パスで提供する。
+
+初期実装では TypeScript / JavaScript および Python 向けの Control API 専用クライアントライブラリは提供しない。利用プロジェクトは Control API を直接呼ぶか、必要に応じて自前のヘルパーまたはライブラリを用意する。
+
+## 13.5 Health Check
+
+```http
+GET /__fixture/health
+```
+
+サーバーがリクエストを受け付け可能な場合は `200 OK` を返す。Scenario のロード有無には依存しない。Docker Compose の JavaScript / TypeScript および Python テストコンテナは、このエンドポイントが `200 OK` を返してからテストを開始する。
 
 ## 13.1 Load Scenario
 
@@ -654,6 +696,8 @@ request history
 
 Scenario定義そのものを保持するか破棄するかは実装時に決定するが、初期実装では保持してruntime stateのみresetする方式を推奨する。
 
+初期実装では Scenario 定義および defaults を保持する。`POST /__fixture/reset` は Request History と Sequence counter を初期化し、同一 Scenario を最初の呼び出しから再実行できる状態に戻す。Scenario 全体を切り替えまたは破棄する場合は `POST /__fixture/scenario` を使用する。
+
 ---
 
 ## 13.3 Request History
@@ -677,6 +721,8 @@ GET /__fixture/requests
 ```
 
 テストコードからAPI呼び出し内容を検証できる。
+
+Request History は Normalized Request の `service`、`operation`、`parameters`、HTTP の `method` と `path` を返す。加えて、返却結果のメタデータとして `status`、`kind`（`response`、`error`、`unexpected`）、適用した `responseIndex`、およびエラー時の `errorType` を返す。レスポンス本文とヘッダーは保存・公開しない。
 
 ---
 
@@ -754,6 +800,29 @@ match:
 ```
 
 初期実装では複雑なmatcher DSLを作り込みすぎず、exact matchを中心に開始する。
+
+初期実装で対応する matcher は、exact、文字列の `*` ワイルドカード、`contains`、正規表現、および `optional` とする。
+
+`optional` は対象パラメータが存在しない場合も一致とし、存在する場合は内側に指定した matcher を評価する。表記は以下とする。
+
+```yaml
+match:
+  ClientRequestToken:
+    optional:
+      regex: '^[a-z0-9-]+$'
+```
+
+`contains` および `regex` は以下の表記とする。
+
+```yaml
+match:
+  MessageBody:
+    contains: patientId
+  QueueUrl:
+    regex: '^https://.+/queue$'
+```
+
+複数の response 定義が同じリクエストに一致する場合、`responses` の記述順で最初に一致した定義を使用する。
 
 ---
 
@@ -1014,6 +1083,16 @@ POST /__fixture/scenario
   "path": "/scenarios/happy-path.yml"
 }
 ```
+
+`path` は `/scenarios` 配下の YAML ファイルに限定する。Docker 実行時はホスト側の Scenario Fixture ディレクトリを `/scenarios` へ read-only でマウントする。
+
+Scenario のロードに失敗した場合、Control API は以下を返す。
+
+- 無効な JSON、無効な YAML、Fixture スキーマ不正、または `/scenarios` 外のパス: `400 Bad Request`
+- `/scenarios` 配下だが存在しない YAML: `404 Not Found`
+- 応答本文: `{"error":"...", "message":"..."}`
+
+ロード失敗時は現在の Scenario を破棄する。以後の AWS リクエストは `UNEXPECTED_AWS_REQUEST` として fail-fast する。テストコードは Control API の非 2xx 応答を検出して、その時点でテストを失敗させる。
 
 ---
 
@@ -1303,6 +1382,8 @@ Converse
 
 ただしBedrock Streaming APIは対象外。
 
+初期実装では `InvokeModel` と `Converse` の両方を実装する。
+
 ---
 
 # 26. Implementation Order
@@ -1571,5 +1652,25 @@ Reset
 
 # 30. 言語
 
-go 言語とする
+Go 言語とする。
 
+初期実装の Go バージョンは、2026-09-07 時点の現行安定版である Go 1.27.1 とする。
+
+HTTP Server は Go 標準ライブラリの `net/http` で実装する。Scenario Fixture と defaults の YAML 読み込みには `go.yaml.in/yaml/v3` を使用する。Web フレームワークは導入せず、対応する AWS wire protocol は本サーバーで限定実装する。
+
+AWS response の request ID は、Go 標準ライブラリの `crypto/rand` で 16 byte を生成し、UUID v4 の version と variant bit を設定して `8-4-4-4-12` 形式へ整形する。UUID 用の外部依存は導入しない。
+
+# 31. SDK 互換テスト実行環境
+
+AWS SDK 互換テストは Docker で再現可能に実行する。Fixture Server のコンテナに加え、以下のテスト用コンテナを Docker Compose で起動する。
+
+| 対象 | 実行環境 |
+| --- | --- |
+| JavaScript / TypeScript | Node.js 24.20.0 LTS |
+| Python | Python 3.14.7 |
+
+各テスト用コンテナは、Fixture Server コンテナに対して AWS SDK を用いた互換テストを実行する。
+
+SDK 互換テストの依存関係は固定する。JavaScript / TypeScript は `package.json` と lockfile、Python は完全固定した `requirements.txt` で AWS SDK を含む依存関係を管理する。
+
+`make test` を初期実装の標準検証入口とする。Go の単体テストを実行した後、Docker Compose 上で JavaScript / TypeScript と Python の AWS SDK 互換テストを実行する。CI も同じコマンドを使用する。
