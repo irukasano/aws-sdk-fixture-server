@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test.mjs"
+    "test": "node --test test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "3.1127.0"

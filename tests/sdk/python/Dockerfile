@@ -1,7 +1,8 @@
 FROM python:3.14.7-slim
 
 WORKDIR /tests
-COPY requirements.txt ./
+COPY tests/sdk/python/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY test.py ./
-CMD ["python", "test.py"]
+COPY packages/sdk/python/fixture_session /tests/fixture_session
+COPY tests/sdk/python/test.py ./
+CMD ["pytest", "-q", "test.py"]

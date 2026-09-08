@@ -673,6 +673,8 @@ Python の SDK 互換テストは `pytest` を使用する。並列実行する�
 
 TypeScript / JavaScript helper は `FixtureSession.start({ serverUrl })`、`loadScenario(path)`、`reset()`、`requests()`、`destroy()` を提供する。Python helper は同じ責務を `start`、`load_scenario`、`reset`、`requests`、`destroy` で提供する。
 
+helper の実装と unit test はそれぞれ `packages/sdk/javascript` および `packages/sdk/python` に置く。`tests/sdk/javascript` と `tests/sdk/python` は helper を利用して AWS SDK との互換性を検証する用途に限定する。
+
 ## 13.5 Health Check
 
 ```http

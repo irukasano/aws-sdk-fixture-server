@@ -1,0 +1,7 @@
+service: bedrock-runtime
+protocol: rest-json
+defaults:
+  response:
+    headers:
+      Content-Type: application/json
+      x-amzn-requestid: ${request_id}

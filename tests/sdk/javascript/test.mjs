@@ -1,26 +1,27 @@
 import assert from "node:assert/strict";
+import test from "node:test";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 
-const endpoint = process.env.AWS_ENDPOINT_URL;
-if (!endpoint) throw new Error("AWS_ENDPOINT_URL must be set");
+import { FixtureSession } from "./fixture-session/index.mjs";
 
-for (let attempt = 0; attempt < 60; attempt += 1) {
+test("AWS SDK client created by the application uses the FixtureSession endpoint", async () => {
+  const serverUrl = process.env.AWS_ENDPOINT_URL;
+  if (!serverUrl) throw new Error("AWS_ENDPOINT_URL must contain the fixture server URL before FixtureSession.start");
+
+  const health = await fetch(`${serverUrl}/__fixture/health`);
+  assert.equal(health.status, 200);
+
+  const fixture = await FixtureSession.start({ serverUrl });
   try {
-    const health = await fetch(`${endpoint}/__fixture/health`);
-    if (health.ok) break;
-  } catch {}
-  if (attempt === 59) throw new Error("fixture server did not become healthy");
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-}
+    await fixture.loadScenario("/scenarios/sdk-core.yml");
 
-const loaded = await fetch(`${endpoint}/__fixture/scenario`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ path: "/scenarios/sdk-core.yml" }),
+    // The application does not receive the helper or an endpoint override.
+    // Its normally constructed SDK client resolves AWS_ENDPOINT_URL itself.
+    const client = new SecretsManagerClient({ region: process.env.AWS_REGION });
+    const result = await client.send(new GetSecretValueCommand({ SecretId: "test/db" }));
+    assert.equal(result.Name, "test/db");
+    assert.equal(result.SecretString, '{"host":"db"}');
+  } finally {
+    await fixture.destroy();
+  }
 });
-assert.equal(loaded.status, 200, await loaded.text());
-
-const client = new SecretsManagerClient({ endpoint, region: process.env.AWS_REGION });
-const result = await client.send(new GetSecretValueCommand({ SecretId: "test/db" }));
-assert.equal(result.Name, "test/db");
-assert.equal(result.SecretString, '{"host":"db"}');

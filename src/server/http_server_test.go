@@ -8,155 +8,478 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
-// These tests exercise the public HTTP boundary. Config makes the read-only
-// /scenarios mount replaceable with a temporary directory in unit tests.
-func TestHealthAndScenarioLoadServeSecretsManagerResponseAndHistory(t *testing.T) {
+// These tests specify the public HTTP boundary. They deliberately use the
+// session endpoint shape that AWS SDK clients receive; a custom session header
+// must not be accepted as a substitute.
+func TestSessionLifecycleRoutesStateIndependentlyAndRejectsDestroyedSession(t *testing.T) {
 	scenarios := t.TempDir()
-	writeScenario(t, scenarios, "secret.yml", `
-name: secret
+	writeScenario(t, scenarios, "first.yml", `
+name: first
 responses:
   - service: secretsmanager
     operation: GetSecretValue
-    match:
-      SecretId: test/db
-    response:
-      Name: test/db
-      SecretString: '{"host":"db"}'
+    match: { SecretId: test/db }
+    response: { Name: test/db, SecretString: first }
 `)
-
+	writeScenario(t, scenarios, "second.yml", `
+name: second
+responses:
+  - service: secretsmanager
+    operation: GetSecretValue
+    match: { SecretId: test/db }
+    response: { Name: test/db, SecretString: second }
+`)
 	handler := NewHandler(Config{ScenarioRoot: scenarios})
 
 	health := httptest.NewRecorder()
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/__fixture/health", nil))
 	if health.Code != http.StatusOK {
-		t.Fatalf("health status = %d, want %d", health.Code, http.StatusOK)
+		t.Fatalf("health status = %d, want 200", health.Code)
 	}
 
-	loaded := serveJSON(handler, http.MethodPost, "/__fixture/scenario", map[string]string{
-		"path": "/scenarios/secret.yml",
-	})
-	if loaded.Code != http.StatusOK {
-		t.Fatalf("load status = %d, body = %s", loaded.Code, loaded.Body.String())
-	}
+	first := createSession(t, handler)
+	second := createSession(t, handler)
+	loadScenario(t, handler, first, "/scenarios/first.yml")
+	loadScenario(t, handler, second, "/scenarios/second.yml")
 
-	aws := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"SecretId":"test/db"}`))
-	aws.Header.Set("Content-Type", "application/x-amz-json-1.1")
-	aws.Header.Set("X-Amz-Target", "secretsmanager.GetSecretValue")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, aws)
-	if response.Code != http.StatusOK {
-		t.Fatalf("GetSecretValue status = %d, body = %s", response.Code, response.Body.String())
+	if got := secret(t, handler, first, "test/db"); !bytes.Contains(got.Body.Bytes(), []byte(`"SecretString":"first"`)) {
+		t.Fatalf("first session response = %s", got.Body.String())
 	}
-	if got := response.Header().Get("Content-Type"); got != "application/x-amz-json-1.1" {
-		t.Fatalf("Content-Type = %q, want aws-json-1.1 default", got)
+	if got := secret(t, handler, second, "test/db"); !bytes.Contains(got.Body.Bytes(), []byte(`"SecretString":"second"`)) {
+		t.Fatalf("second session response = %s", got.Body.String())
 	}
-	if response.Header().Get("x-amzn-requestid") == "" {
-		t.Fatal("GetSecretValue response did not include x-amzn-requestid")
-	}
-	var body map[string]any
-	decodeJSON(t, response.Body, &body)
-	if body["Name"] != "test/db" || body["SecretString"] != `{"host":"db"}` {
-		t.Fatalf("GetSecretValue body = %#v", body)
-	}
+	assertHistory(t, handler, first, 1, "response")
+	assertHistory(t, handler, second, 1, "response")
 
-	history := httptest.NewRecorder()
-	handler.ServeHTTP(history, httptest.NewRequest(http.MethodGet, "/__fixture/requests", nil))
-	if history.Code != http.StatusOK {
-		t.Fatalf("history status = %d, body = %s", history.Code, history.Body.String())
+	destroyed := serveJSON(handler, http.MethodDelete, sessionControlPath(first, ""), nil)
+	if destroyed.Code != http.StatusNoContent {
+		t.Fatalf("destroy status = %d, body = %s", destroyed.Code, destroyed.Body.String())
 	}
-	var entries []map[string]any
-	decodeJSON(t, history.Body, &entries)
-	if len(entries) != 1 {
-		t.Fatalf("history length = %d, want 1: %#v", len(entries), entries)
+	if got := serveJSON(handler, http.MethodGet, sessionControlPath(first, "requests"), nil); got.Code != http.StatusNotFound {
+		t.Fatalf("destroyed session history status = %d, want 404", got.Code)
 	}
-	entry := entries[0]
-	if entry["service"] != "secretsmanager" || entry["operation"] != "GetSecretValue" || entry["kind"] != "response" || entry["status"] != float64(http.StatusOK) {
-		t.Fatalf("history entry = %#v", entry)
-	}
-	parameters, ok := entry["parameters"].(map[string]any)
-	if !ok || parameters["SecretId"] != "test/db" {
-		t.Fatalf("history parameters = %#v", entry["parameters"])
-	}
+	assertInvalidJSONSession(t, secret(t, handler, first, "test/db"))
+
+	// A normal AWS-shaped request outside the session endpoint is not allowed.
+	missing := jsonRequest(http.MethodPost, "/", `{"SecretId":"test/db"}`, "application/x-amz-json-1.1", "secretsmanager.GetSecretValue")
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missing)
+	assertInvalidJSONSession(t, missingResponse)
 }
 
-func TestSequenceResetRestartsSequenceWithoutDiscardingScenario(t *testing.T) {
+func TestSessionControlScenarioSequenceResetAndHistoryMetadata(t *testing.T) {
 	scenarios := t.TempDir()
 	writeScenario(t, scenarios, "sequence.yml", `
 name: sequence
 responses:
   - service: sqs
     operation: SendMessage
-    match:
-      QueueUrl: "*"
+    match: { QueueUrl: "*" }
     sequence:
-      - error:
-          type: ThrottlingException
-          message: throttled
-          status: 429
-      - response:
-          MessageId: message-1
+      - error: { type: ThrottlingException, message: throttled, status: 429 }
+      - response: { MessageId: message-1 }
 `)
 	handler := NewHandler(Config{ScenarioRoot: scenarios})
-	if loaded := serveJSON(handler, http.MethodPost, "/__fixture/scenario", map[string]string{"path": "/scenarios/sequence.yml"}); loaded.Code != http.StatusOK {
-		t.Fatalf("load status = %d, body = %s", loaded.Code, loaded.Body.String())
-	}
+	session := createSession(t, handler)
+	loadScenario(t, handler, session, "/scenarios/sequence.yml")
 
-	first := sendMessage(handler)
-	if first.Code != http.StatusTooManyRequests {
-		t.Fatalf("first SendMessage status = %d, want %d", first.Code, http.StatusTooManyRequests)
+	first := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/test", "hello")
+	if first.Code != http.StatusTooManyRequests || !bytes.Contains(first.Body.Bytes(), []byte("ThrottlingException")) {
+		t.Fatalf("first sequence result = (%d, %s)", first.Code, first.Body.String())
 	}
-	second := sendMessage(handler)
+	second := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/test", "hello")
 	if second.Code != http.StatusOK || !bytes.Contains(second.Body.Bytes(), []byte(`"MessageId":"message-1"`)) {
-		t.Fatalf("second SendMessage = (%d, %s), want successful sequence response", second.Code, second.Body.String())
+		t.Fatalf("second sequence result = (%d, %s)", second.Code, second.Body.String())
 	}
-	third := sendMessage(handler)
+	third := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/test", "hello")
 	if third.Code != http.StatusOK {
-		t.Fatalf("sequence exhaustion status = %d, want last response to continue", third.Code)
+		t.Fatalf("sequence must repeat its final result, got (%d, %s)", third.Code, third.Body.String())
 	}
 
-	reset := serveJSON(handler, http.MethodPost, "/__fixture/reset", nil)
+	history := sessionHistory(t, handler, session)
+	if len(history) != 3 {
+		t.Fatalf("history length = %d, want 3: %#v", len(history), history)
+	}
+	firstEntry := history[0]
+	if firstEntry["service"] != "sqs" || firstEntry["operation"] != "SendMessage" || firstEntry["method"] != http.MethodPost || firstEntry["path"] == "" || firstEntry["kind"] != "error" || firstEntry["status"] != float64(http.StatusTooManyRequests) || firstEntry["responseIndex"] != float64(0) || firstEntry["errorType"] != "ThrottlingException" {
+		t.Fatalf("first history entry = %#v", firstEntry)
+	}
+	if _, exposed := firstEntry["body"]; exposed {
+		t.Fatalf("history must not expose response body: %#v", firstEntry)
+	}
+	parameters, ok := firstEntry["parameters"].(map[string]any)
+	if !ok || parameters["QueueUrl"] != "https://sqs.us-east-1.amazonaws.com/123/test" || parameters["MessageBody"] != "hello" {
+		t.Fatalf("history parameters = %#v", firstEntry["parameters"])
+	}
+
+	reset := serveJSON(handler, http.MethodPost, sessionControlPath(session, "reset"), nil)
 	if reset.Code != http.StatusOK {
 		t.Fatalf("reset status = %d, body = %s", reset.Code, reset.Body.String())
 	}
-	if afterReset := sendMessage(handler); afterReset.Code != http.StatusTooManyRequests {
-		t.Fatalf("SendMessage after reset status = %d, want %d", afterReset.Code, http.StatusTooManyRequests)
-	}
-
-	history := httptest.NewRecorder()
-	handler.ServeHTTP(history, httptest.NewRequest(http.MethodGet, "/__fixture/requests", nil))
-	var entries []map[string]any
-	decodeJSON(t, history.Body, &entries)
-	if len(entries) != 1 || entries[0]["kind"] != "error" || entries[0]["errorType"] != "ThrottlingException" {
-		t.Fatalf("history after reset = %#v", entries)
+	assertHistory(t, handler, session, 0, "")
+	if afterReset := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/test", "hello"); afterReset.Code != http.StatusTooManyRequests {
+		t.Fatalf("reset must preserve scenario and restart sequence, got %d", afterReset.Code)
 	}
 }
 
-func TestFailedScenarioLoadClearsScenarioAndUnexpectedRequestFailsFast(t *testing.T) {
-	handler := NewHandler(Config{ScenarioRoot: t.TempDir()})
-	failed := serveJSON(handler, http.MethodPost, "/__fixture/scenario", map[string]string{"path": "/outside.yml"})
-	if failed.Code != http.StatusBadRequest {
-		t.Fatalf("outside scenario status = %d, want %d", failed.Code, http.StatusBadRequest)
+func TestMatchersUseFirstMatchAndRejectInvalidScenarioThenClearState(t *testing.T) {
+	scenarios := t.TempDir()
+	writeScenario(t, scenarios, "match.yml", `
+name: match
+responses:
+  - service: secretsmanager
+    operation: GetSecretValue
+    match:
+      SecretId: test/db
+      ClientRequestToken:
+        optional:
+          regex: '^[a-z0-9-]+$'
+    response: { SecretString: first }
+  - service: secretsmanager
+    operation: GetSecretValue
+    match: { SecretId: test/db }
+    response: { SecretString: fallback }
+  - service: sqs
+    operation: SendMessage
+    match:
+      QueueUrl: { regex: '^https://.+/queue$' }
+      MessageBody: { contains: patientId }
+    response: { MessageId: matched }
+`)
+	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	session := createSession(t, handler)
+	loadScenario(t, handler, session, "/scenarios/match.yml")
+
+	// Omitted optional input matches; this also proves response order wins.
+	if got := secret(t, handler, session, "test/db"); !bytes.Contains(got.Body.Bytes(), []byte(`"SecretString":"first"`)) {
+		t.Fatalf("optional matcher / first response result = %s", got.Body.String())
+	}
+	// Present optional input must satisfy its inner regex, so this request falls
+	// through to the second definition.
+	request := jsonRequest(http.MethodPost, sessionAWSPath(session, "/"), `{"SecretId":"test/db","ClientRequestToken":"UPPER"}`, "application/x-amz-json-1.1", "secretsmanager.GetSecretValue")
+	fallback := httptest.NewRecorder()
+	handler.ServeHTTP(fallback, request)
+	if fallback.Code != http.StatusOK || !bytes.Contains(fallback.Body.Bytes(), []byte(`"SecretString":"fallback"`)) {
+		t.Fatalf("optional regex fallback = (%d, %s)", fallback.Code, fallback.Body.String())
+	}
+	if got := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "contains patientId here"); got.Code != http.StatusOK || !bytes.Contains(got.Body.Bytes(), []byte(`"MessageId":"matched"`)) {
+		t.Fatalf("contains / regex matcher result = (%d, %s)", got.Code, got.Body.String())
 	}
 
-	response := sendMessage(handler)
-	if response.Code != http.StatusInternalServerError {
-		t.Fatalf("unexpected request status = %d, want %d", response.Code, http.StatusInternalServerError)
+	for name, contents := range map[string]string{
+		"unknown-field.yml": `name: invalid
+unknown: true
+responses: []
+`,
+		"unknown-matcher.yml": `name: invalid
+responses:
+  - service: sqs
+    operation: SendMessage
+    match: { QueueUrl: { glob: "*" } }
+    response: { MessageId: x }
+`,
+		"multiple-result.yml": `name: invalid
+responses:
+  - service: sqs
+    operation: SendMessage
+    response: { MessageId: x }
+    error: { type: Bad }
+`,
+		"empty-sequence.yml": `name: invalid
+responses:
+  - service: sqs
+    operation: SendMessage
+    sequence: []
+`,
+		"invalid-yaml.yml": `name: invalid
+responses: [
+`,
+	} {
+		writeScenario(t, scenarios, name, contents)
+		loaded := serveJSON(handler, http.MethodPost, sessionControlPath(session, "scenario"), map[string]string{"path": "/scenarios/" + name})
+		if loaded.Code != http.StatusBadRequest {
+			t.Fatalf("%s load status = %d, body = %s", name, loaded.Code, loaded.Body.String())
+		}
+		assertControlError(t, loaded)
+		unexpected := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "anything")
+		if unexpected.Code != http.StatusInternalServerError || !bytes.Contains(unexpected.Body.Bytes(), []byte("UNEXPECTED_AWS_REQUEST")) {
+			t.Fatalf("%s must clear scenario: (%d, %s)", name, unexpected.Code, unexpected.Body.String())
+		}
 	}
-	if !bytes.Contains(response.Body.Bytes(), []byte("UNEXPECTED_AWS_REQUEST")) {
-		t.Fatalf("unexpected request body = %s", response.Body.String())
+
+	if outside := serveJSON(handler, http.MethodPost, sessionControlPath(session, "scenario"), map[string]string{"path": "/outside.yml"}); outside.Code != http.StatusBadRequest {
+		t.Fatalf("outside scenario path = %d, want 400", outside.Code)
+	} else {
+		assertControlError(t, outside)
+	}
+	if missing := serveJSON(handler, http.MethodPost, sessionControlPath(session, "scenario"), map[string]string{"path": "/scenarios/does-not-exist.yml"}); missing.Code != http.StatusNotFound {
+		t.Fatalf("missing scenario path = %d, want 404", missing.Code)
+	} else {
+		assertControlError(t, missing)
+	}
+
+	invalidJSON := httptest.NewRequest(http.MethodPost, sessionControlPath(session, "scenario"), strings.NewReader(`{"path":`))
+	invalidJSON.Header.Set("Content-Type", "application/json")
+	invalidJSONResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidJSONResponse, invalidJSON)
+	if invalidJSONResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid scenario JSON status = %d, body = %s", invalidJSONResponse.Code, invalidJSONResponse.Body.String())
+	}
+	assertControlError(t, invalidJSONResponse)
+}
+
+func TestFixtureErrorDefaultsToBadRequest(t *testing.T) {
+	scenarios := t.TempDir()
+	writeScenario(t, scenarios, "error.yml", `
+name: error
+responses:
+  - service: secretsmanager
+    operation: GetSecretValue
+    match: { SecretId: missing }
+    error: { type: ResourceNotFoundException, message: not found }
+`)
+	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	session := createSession(t, handler)
+	loadScenario(t, handler, session, "/scenarios/error.yml")
+
+	response := secret(t, handler, session, "missing")
+	if response.Code != http.StatusBadRequest || response.Header().Get("Content-Type") != "application/x-amz-json-1.1" {
+		t.Fatalf("default fixture error = (%d, %#v, %s)", response.Code, response.Header(), response.Body.String())
+	}
+	var body map[string]any
+	decodeJSON(t, response.Body, &body)
+	if body["__type"] != "ResourceNotFoundException" || body["message"] != "not found" {
+		t.Fatalf("fixture error body = %#v", body)
+	}
+	assertHistory(t, handler, session, 1, "error")
+}
+
+func TestAllInitialAWSOperationsEncodeProtocolCompatibleResponses(t *testing.T) {
+	scenarios := t.TempDir()
+	writeScenario(t, scenarios, "all.yml", `
+name: all
+responses:
+  - service: secretsmanager
+    operation: GetSecretValue
+    match: { SecretId: test/db }
+    response: { Name: test/db, SecretString: secret }
+  - service: sqs
+    operation: SendMessage
+    match: { QueueUrl: "*", MessageBody: hello }
+    response: { MessageId: message-1 }
+  - service: s3
+    operation: GetObject
+    match: { Bucket: test-bucket, Key: hello.txt }
+    response:
+      body: hello world
+      headers: { Content-Type: text/plain, ETag: '"abc123"' }
+  - service: s3
+    operation: PutObject
+    match: { Bucket: test-bucket, Key: upload.txt }
+    response: { ETag: '"upload123"' }
+  - service: s3
+    operation: HeadObject
+    match: { Bucket: test-bucket, Key: hello.txt }
+    response: { ContentLength: 11, ETag: '"abc123"' }
+  - service: bedrock-runtime
+    operation: InvokeModel
+    match: { modelId: test-model }
+    response: { body: '{"completion":"fixture response"}' }
+  - service: bedrock-runtime
+    operation: Converse
+    match: { modelId: test-model }
+    response:
+      output:
+        message:
+          role: assistant
+          content: [{ text: fixture response }]
+`)
+	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	session := createSession(t, handler)
+	loadScenario(t, handler, session, "/scenarios/all.yml")
+
+	secretResponse := secret(t, handler, session, "test/db")
+	if secretResponse.Code != http.StatusOK || secretResponse.Header().Get("Content-Type") != "application/x-amz-json-1.1" {
+		t.Fatalf("Secrets Manager protocol defaults = (%d, %#v)", secretResponse.Code, secretResponse.Header())
+	}
+	assertUUIDv4(t, secretResponse.Header().Get("x-amzn-requestid"))
+	if got := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "hello"); got.Code != http.StatusOK || got.Header().Get("Content-Type") != "application/x-amz-json-1.0" || !bytes.Contains(got.Body.Bytes(), []byte(`"MessageId":"message-1"`)) {
+		t.Fatalf("SQS aws-json-1.0 result = (%d, %#v, %s)", got.Code, got.Header(), got.Body.String())
+	}
+
+	get := s3Request(handler, session, http.MethodGet, "hello.txt", nil)
+	if get.Code != http.StatusOK || get.Body.String() != "hello world" || get.Header().Get("Content-Type") != "text/plain" || get.Header().Get("ETag") != `"abc123"` {
+		t.Fatalf("S3 GetObject rest-xml result = (%d, %#v, %s)", get.Code, get.Header(), get.Body.String())
+	}
+	assertUUIDv4(t, get.Header().Get("x-amz-request-id"))
+	put := s3Request(handler, session, http.MethodPut, "upload.txt", strings.NewReader("upload"))
+	if put.Code != http.StatusOK || put.Header().Get("ETag") != `"upload123"` {
+		t.Fatalf("S3 PutObject rest-xml result = (%d, %#v)", put.Code, put.Header())
+	}
+	assertUUIDv4(t, put.Header().Get("x-amz-request-id"))
+	head := s3Request(handler, session, http.MethodHead, "hello.txt", nil)
+	if head.Code != http.StatusOK || head.Header().Get("ETag") != `"abc123"` || head.Header().Get("Content-Length") != "11" {
+		t.Fatalf("S3 HeadObject rest-xml result = (%d, %#v)", head.Code, head.Header())
+	}
+
+	invoke := jsonRequest(http.MethodPost, sessionAWSPath(session, "/model/test-model/invoke"), `{}`, "application/json", "")
+	invokeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invokeResponse, invoke)
+	if invokeResponse.Code != http.StatusOK || !bytes.Contains(invokeResponse.Body.Bytes(), []byte(`"completion":"fixture response"`)) {
+		t.Fatalf("Bedrock InvokeModel rest-json result = (%d, %#v, %s)", invokeResponse.Code, invokeResponse.Header(), invokeResponse.Body.String())
+	}
+	assertUUIDv4(t, invokeResponse.Header().Get("x-amzn-requestid"))
+	converse := jsonRequest(http.MethodPost, sessionAWSPath(session, "/model/test-model/converse"), `{"messages":[]}`, "application/json", "")
+	converseResponse := httptest.NewRecorder()
+	handler.ServeHTTP(converseResponse, converse)
+	if converseResponse.Code != http.StatusOK || !bytes.Contains(converseResponse.Body.Bytes(), []byte(`"fixture response"`)) || converseResponse.Header().Get("x-amzn-requestid") == "" {
+		t.Fatalf("Bedrock Converse rest-json result = (%d, %#v, %s)", converseResponse.Code, converseResponse.Header(), converseResponse.Body.String())
+	}
+
+	// REST/XML invalid-session errors use <Code>, rather than the AWS JSON __type.
+	invalidS3 := s3Request(handler, "missing", http.MethodGet, "hello.txt", nil)
+	if invalidS3.Code != http.StatusBadRequest || !bytes.Contains(invalidS3.Body.Bytes(), []byte("<Code>INVALID_FIXTURE_SESSION</Code>")) {
+		t.Fatalf("rest-xml invalid session = (%d, %s)", invalidS3.Code, invalidS3.Body.String())
+	}
+
+	unexpectedS3 := s3Request(handler, session, http.MethodGet, "missing.txt", nil)
+	if unexpectedS3.Code != http.StatusInternalServerError || !bytes.Contains(unexpectedS3.Body.Bytes(), []byte("<Code>UNEXPECTED_AWS_REQUEST</Code>")) {
+		t.Fatalf("rest-xml unexpected request = (%d, %s)", unexpectedS3.Code, unexpectedS3.Body.String())
+	}
+	unexpectedBedrock := jsonRequest(http.MethodPost, sessionAWSPath(session, "/model/unknown/invoke"), `{}`, "application/json", "")
+	unexpectedBedrockResponse := httptest.NewRecorder()
+	handler.ServeHTTP(unexpectedBedrockResponse, unexpectedBedrock)
+	if unexpectedBedrockResponse.Code != http.StatusInternalServerError || !bytes.Contains(unexpectedBedrockResponse.Body.Bytes(), []byte("UNEXPECTED_AWS_REQUEST")) {
+		t.Fatalf("rest-json unexpected request = (%d, %s)", unexpectedBedrockResponse.Code, unexpectedBedrockResponse.Body.String())
 	}
 }
 
-func sendMessage(handler http.Handler) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"QueueUrl":"https://sqs.us-east-1.amazonaws.com/123456789012/test","MessageBody":"hello"}`))
-	request.Header.Set("Content-Type", "application/x-amz-json-1.0")
-	request.Header.Set("X-Amz-Target", "AmazonSQS.SendMessage")
+func createSession(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	created := serveJSON(handler, http.MethodPost, "/__fixture/sessions", nil)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create session status = %d, body = %s", created.Code, created.Body.String())
+	}
+	var payload struct {
+		SessionID string `json:"sessionId"`
+		Endpoint  string `json:"endpoint"`
+	}
+	decodeJSON(t, created.Body, &payload)
+	if payload.SessionID == "" || !strings.HasSuffix(payload.Endpoint, "/__fixture/sessions/"+payload.SessionID+"/aws") {
+		t.Fatalf("session payload = %#v", payload)
+	}
+	return payload.SessionID
+}
+
+func loadScenario(t *testing.T, handler http.Handler, sessionID, path string) {
+	t.Helper()
+	loaded := serveJSON(handler, http.MethodPost, sessionControlPath(sessionID, "scenario"), map[string]string{"path": path})
+	if loaded.Code != http.StatusOK {
+		t.Fatalf("load %s status = %d, body = %s", path, loaded.Code, loaded.Body.String())
+	}
+	var payload map[string]any
+	decodeJSON(t, loaded.Body, &payload)
+	if payload["loaded"] != true {
+		t.Fatalf("load response = %#v", payload)
+	}
+}
+
+func secret(t *testing.T, handler http.Handler, sessionID, secretID string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := jsonRequest(http.MethodPost, sessionAWSPath(sessionID, "/"), `{"SecretId":"`+secretID+`"}`, "application/x-amz-json-1.1", "secretsmanager.GetSecretValue")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func sendMessage(handler http.Handler, sessionID, queueURL, message string) *httptest.ResponseRecorder {
+	request := jsonRequest(http.MethodPost, sessionAWSPath(sessionID, "/"), `{"QueueUrl":"`+queueURL+`","MessageBody":"`+message+`"}`, "application/x-amz-json-1.0", "AmazonSQS.SendMessage")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func s3Request(handler http.Handler, sessionID, method, key string, body io.Reader) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, sessionAWSPath(sessionID, "/test-bucket/"+key), body)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func sessionControlPath(sessionID, suffix string) string {
+	path := "/__fixture/sessions/" + sessionID
+	if suffix != "" {
+		path += "/" + suffix
+	}
+	return path
+}
+
+func sessionAWSPath(sessionID, suffix string) string {
+	return "/__fixture/sessions/" + sessionID + "/aws" + suffix
+}
+
+func jsonRequest(method, path, payload, contentType, target string) *http.Request {
+	request := httptest.NewRequest(method, path, strings.NewReader(payload))
+	request.Header.Set("Content-Type", contentType)
+	if target != "" {
+		request.Header.Set("X-Amz-Target", target)
+	}
+	return request
+}
+
+func assertInvalidJSONSession(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	if response.Code != http.StatusBadRequest || !bytes.Contains(response.Body.Bytes(), []byte("INVALID_FIXTURE_SESSION")) {
+		t.Fatalf("invalid aws-json session = (%d, %s)", response.Code, response.Body.String())
+	}
+	var body map[string]any
+	decodeJSON(t, response.Body, &body)
+	if body["__type"] != "INVALID_FIXTURE_SESSION" {
+		t.Fatalf("invalid aws-json error = %#v", body)
+	}
+}
+
+func assertControlError(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	var body map[string]any
+	decodeJSON(t, response.Body, &body)
+	if body["error"] == "" || body["message"] == "" {
+		t.Fatalf("control API error body = %#v", body)
+	}
+}
+
+func assertUUIDv4(t *testing.T, value string) {
+	t.Helper()
+	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(value) {
+		t.Fatalf("request ID = %q, want UUID v4", value)
+	}
+}
+
+func assertHistory(t *testing.T, handler http.Handler, sessionID string, wantLength int, wantKind string) {
+	t.Helper()
+	history := sessionHistory(t, handler, sessionID)
+	if len(history) != wantLength {
+		t.Fatalf("history length = %d, want %d: %#v", len(history), wantLength, history)
+	}
+	if wantKind != "" && history[0]["kind"] != wantKind {
+		t.Fatalf("history kind = %#v, want %q", history[0], wantKind)
+	}
+}
+
+func sessionHistory(t *testing.T, handler http.Handler, sessionID string) []map[string]any {
+	t.Helper()
+	history := serveJSON(handler, http.MethodGet, sessionControlPath(sessionID, "requests"), nil)
+	if history.Code != http.StatusOK {
+		t.Fatalf("history status = %d, body = %s", history.Code, history.Body.String())
+	}
+	var entries []map[string]any
+	decodeJSON(t, history.Body, &entries)
+	return entries
 }
 
 func serveJSON(handler http.Handler, method, path string, payload any) *httptest.ResponseRecorder {

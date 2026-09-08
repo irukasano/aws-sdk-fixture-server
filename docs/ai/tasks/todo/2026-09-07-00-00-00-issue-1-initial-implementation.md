@@ -70,16 +70,16 @@
 
 - [x] session 分離 HLD を合意し、同一 process 内の並列実行を非対応とする。
 - [x] 先行 red テストと Compose 設定を独立レビューし、session 分離・依存固定・readiness・カバレッジの不足を確認する。
-- [ ] Fixture Server 用 `Dockerfile`、healthcheck、3 サービスを定義する `docker-compose.yml`、`Makefile` を整備する。`make test` は Fixture Server を起動後、JavaScript / TypeScript と Python の SDK テストを直列実行する。
-- [ ] TypeScript / JavaScript・Python のローカル `FixtureSession` helper パッケージと、固定済み依存ファイル（npm lockfile、完全固定 `requirements.txt`）を用意する。
-- [ ] サブエージェントに、session lifecycle / endpoint 環境変数の保存・復元 / Control API / matcher / validation / history / 全対象 protocol・Operation を対象とする最小 red テストを作成させ、Docker 上で red を確認する。本体実装は依頼しない。
-- [ ] 別のサブエージェントに red テストを HLD・本 Plan と照合させる。不足または不整合を解消し、承認済みの red を確定する。
-- [ ] Go サーバーを実装する。session resource API、session endpoint routing、Scenario engine、4 protocol・7 Operation、defaults、error、history、healthcheck を HLD の範囲で実装し、反復して green にする。
-- [ ] session helper を実装し、start / destroy の環境変数復元、session-scoped Control API、process-isolated SDK client 利用を検証する。
-- [ ] JavaScript / TypeScript では Node.js `node --test` の process isolation、Python では pytest（必要時 pytest-xdist process worker）で SDK 互換テストを実行する。同一 process concurrent test は追加しない。
-- [ ] `make test`、Docker Compose SDK 互換テスト、Go 単体テスト、`git diff main...HEAD` を実行してログを確認する。
-- [ ] `commit-workflow` を実行し、Plan / HLD / 差分を要約した `refs #1` 付きコミットを作成する。
-- [ ] Review に変更内容、red / green 証跡、独立レビュー、検証結果、main 差分を記録する。
+- [x] Fixture Server 用 `Dockerfile`、healthcheck、3 サービスを定義する `docker-compose.yml`、`Makefile` を整備する。`make test` は Fixture Server を起動後、JavaScript / TypeScript と Python の SDK テストを直列実行する。
+- [x] `packages/sdk/javascript`・`packages/sdk/python` に TypeScript / JavaScript・Python のローカル `FixtureSession` helper パッケージと unit test を置き、`tests/sdk` は helper を利用する SDK 互換テスト専用とする。固定済み依存ファイル（npm lockfile、完全固定 `requirements.txt`）も用意する。
+- [x] サブエージェントに、session lifecycle / endpoint 環境変数の保存・復元 / Control API / matcher / validation / history / 全対象 protocol・Operation を対象とする最小 red テストを作成させ、Docker 上で red を確認する。本体実装は依頼しない。
+- [x] 別のサブエージェントに red テストを HLD・本 Plan と照合させる。不足または不整合を解消し、承認済みの red を確定する。
+- [x] Go サーバーを実装する。session resource API、session endpoint routing、Scenario engine、4 protocol・7 Operation、defaults、error、history、healthcheck を HLD の範囲で実装し、反復して green にする。
+- [x] session helper を実装し、start / destroy の環境変数復元、session-scoped Control API、process-isolated SDK client 利用を検証する。
+- [x] JavaScript / TypeScript では Node.js `node --test` の process isolation、Python では pytest（必要時 pytest-xdist process worker）で SDK 互換テストを実行する。同一 process concurrent test は追加しない。
+- [x] `make test`、Docker Compose SDK 互換テスト、Go 単体テスト、`git diff main...HEAD` を実行してログを確認する（基準ブランチは存在しない `main` ではなく `master`）。
+- [x] `commit-workflow` を実行し、Plan / HLD / 差分を要約した `refs #1` 付きコミットを作成する。
+- [x] Review に変更内容、red / green 証跡、独立レビュー、検証結果、main 差分を記録する。
 
 ## Review
 
@@ -93,3 +93,11 @@
 - 作成内容: `.codex/skills/implementation-workflow` に、red テスト担当と独立 HLD/Plan レビュー担当のサブエージェントを分ける実装 workflow を追加した。`.codex/skills/commit-workflow` に、Plan/HLD/差分を要約し、`feature/*#number` または `bugs/*#number` の最終番号を `refs #number` として subject の先頭に付与するコミット workflow を追加した。
 - レビュー: 独立レビューで、実装 workflow による commit 呼び出しと commit workflow の承認条件が矛盾することを検出した。ユーザーが実装 workflow を明示的に起動した場合は、その commit workflow 呼び出しも承認済みと定義して修正した。
 - 検証: `quick_validate.py` は PyYAML が未インストールで実行できず、環境には `pip` も存在しなかった。代替として `git diff --check`、`[TODO]` プレースホルダー不在の確認、各 `SKILL.md` の YAML frontmatter（`name` / `description`）確認、必須ファイル存在確認を実行し成功した。
+
+### 2026-09-08 00:00 : session 分離を反映した Issue #1 再計画
+
+- red テスト: `src/server/http_server_test.go` に session lifecycle・隔離・URL routing・session-scoped Control API・reset/sequence/history・matcher・厳格 YAML validation・全 7 Operation/4 protocol の red テストを追加した。`git diff --check` は成功した。ローカル環境には Go がないため `gofmt` / `go test ./...` は実行不可で、実装前の Docker Compose はルート `Dockerfile` 不在により red となった。
+- 独立レビュー: サーバー境界テストは HLD と整合することを確認し、不足していた無効 JSON/YAML、`/scenarios` 内の欠損ファイルの 404、history parameters、fixture error の既定 400 をテストのみで補完した。一方、JS/Python `FixtureSession` helper の環境変数保存・復元、失敗時復元、session-scoped Control API、SDK endpoint 利用を検証する red テストが未作成のため承認保留となった。helper の置き場所はユーザー合意により `packages/sdk/javascript`・`packages/sdk/python` とし、`tests/sdk` は SDK 互換テスト専用とする。red テスト追加後に再レビューする。
+- red テスト再レビュー: JS/Python helper の lifecycle、全 `AWS_ENDPOINT_URL_*` の保存・削除・復元、start / destroy の失敗時挙動、および helper 経由の SDK endpoint 利用を追加し、独立レビューで red テスト仕様の承認を得た。
+- 実装: Go `net/http` サーバーに session-scoped Control API、Scenario YAML の厳格検証、matcher、sequence/history、7 Operation/4 protocol、AWS 形式 error、UUID v4 request ID、同梱 defaults loader を実装した。JS/Python helper と unit test、固定依存、Compose healthcheck、直列 SDK test 用 Makefile を追加した。
+- green 検証: `make go-test`、`npm --prefix packages/sdk/javascript test`、`python3 -m unittest discover -s packages/sdk/python -p 'test_*.py'`、`make sdk-test`、`git diff --check` が成功した。`make test` も defaults loader 追加前の同一構成で成功し、追加後は Go unit test と SDK integration test を再実行して成功した。基準ブランチは `main` ではなく `master` のため、差分確認は `master` を用いた。
