@@ -6,3 +6,4 @@
 - HLD のテスト要件を確認する際は、列挙された最低限の対象を省略せず、質問や計画には全対象（本件では JavaScript / TypeScript と Python）を反映する。
 - HLD が `defaults/*.yml` のように構成と責務を明示している場合、別方式を推奨する前に当該記述との整合を確認する。
 - 外部プロトコルの対応可否を問題として提示する前に、対象 SDK・対象バージョンでの現行仕様を一次情報で確認する。本件の SQS は JavaScript / TypeScript と Python の SDK で AWS JSON protocol を使用できるため、HLD の `aws-json-1.0` 対応で初期要件を満たす。
+- 仕様確認では「generic」などの曖昧な外来語を使わず、`AWS_ENDPOINT_URL` のように対象の変数名を明示し、役割を日本語で説明する。
