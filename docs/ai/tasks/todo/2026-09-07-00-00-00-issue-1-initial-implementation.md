@@ -36,6 +36,18 @@
 - 未確定事項: なし。
 - ユーザー確認が必要な項目: 上記の skill scope と停止条件。
 
+### 2026-09-08 00:00 : PR テンプレートと作成 workflow
+
+- 目的: PR の概要、変更範囲、検証内容、既知の制約を一貫した形式で記載し、変更範囲の書き漏れを防ぐ。
+- 変更対象: `.github/PULL_REQUEST_TEMPLATE.md`。後続で合意された場合は、このテンプレートを入力に PR を作成するリポジトリ内 skill。
+- 非変更対象: 既存の implementation / commit skill、GitHub Issue の内容、PR の自動マージ。
+- 入出力: テンプレート先頭は Issue 番号を埋め込んだ `fixes #{number}`、2 行目は空行とする。続けて `サマリ`（目的・背景を約 200 文字）、`変更範囲`（変更対象を箇条書き）、`テスト`（観点と実行内容を箇条書き）、`暫定判断・懸念`（なければ「なし」）を置く。`#{number}` は PR workflow が `feature/*#number` または `bugs/*#number` のブランチ末尾から取得して置換する。PR title はサマリをさらに短くした変更内容ベースの文とする。workflow は `gh issue view #{number} --json assignees` で元 Issue の Assignees を取得し、確認表示と PR の Assignee に同じ GitHub login を使う。PR 作成に成功した場合、workflow は作成された PR の URL を最後に出力する。
+- 運用方法: PR workflow は HLD / Plan / 差分 / 検証結果からテンプレートの各欄と title の下書きを作成し、title・本文・Assignees を確認用に表示する。ユーザーが承認した場合だけ、まず `git push -u origin <current-branch>`、続いて repository の既定 branch を base として `gh pr create` を実行する。Issue に Assignee がいない場合は、PR に Assignee を指定しない。サマリは概要に限定し、レビュー対象の列挙は `変更範囲` に必ず箇条書きで記載する。
+- 失敗時挙動: 未コミット変更がある場合、Issue 番号、変更範囲、テスト結果、または暫定判断・懸念を決定できない場合、PR を作成しない。Issue Assignees の取得に失敗した場合、または表示した title / 本文 / Assignees が承認されない場合も push / PR 作成を行わない。push に失敗した場合は PR を作成しない。push 成功後に PR 作成が失敗した場合は、remote branch が残ったことを明示して停止する。
+- 既存機能への影響: PR の記載形式のみを追加し、アプリケーションの動作には影響しない。
+- 未確定事項: なし。
+- ユーザー確認が必要な項目: HLD 全体の合意。
+
 ## Plan
 
 ### 2026-09-07 00:00 : Issue #1 初期実装
@@ -81,6 +93,28 @@
 - [x] `commit-workflow` を実行し、Plan / HLD / 差分を要約した `refs #1` 付きコミットを作成する。
 - [x] Review に変更内容、red / green 証跡、独立レビュー、検証結果、main 差分を記録する。
 
+### 2026-09-08 00:00 : PR テンプレートと作成 workflow
+
+- [x] `skill-creator` の定義を全文再確認し、HLD と skill の必須手順・制約・検証方法を Plan に反映する。
+- [ ] `.github/PULL_REQUEST_TEMPLATE.md` に、`fixes #{number}`、空行、サマリ、変更範囲、テスト、暫定判断・懸念の順でテンプレートを作成する。
+- [ ] skill initializer を使って `.codex/skills/pull-request-workflow/` を作成し、通常の自動 discovery を有効にした UI metadata を生成する。
+- [ ] `SKILL.md` に、Issue 番号の取得、Issue Assignees の取得、HLD / Plan / 差分 / 検証結果に基づく title・本文の下書き、ユーザーへの確認表示、承認後の `git push -u origin <current-branch>`、repository の既定 branch を base とする `gh pr create`、PR URL 出力を記載する。未解決情報・Assignee 取得・push・PR 作成の各失敗時の停止条件も記載する。
+- [ ] 別担当のサブエージェントに、HLD とテンプレート・skill の整合、外部変更前の承認境界、push 後の PR 作成失敗時の報告、PR URL 出力をレビューさせる。必要なら skill / template のみを修正する。
+- [ ] `quick_validate.py`、`git diff --check`、frontmatter / placeholder / 必須見出し / skill 名の静的確認を実行する。PR 作成・push は実行しない。
+- [ ] Review に変更内容、独立レビュー、検証結果を記録する。今回の依頼では commit / push / PR 作成は行わない。
+
+### 2026-09-08 17:18 : PR テンプレートと作成 workflow の実装
+
+- [x] `skill-creator` の定義と `agents/openai.yaml` の UI metadata 規約を全文確認した。
+- [x] `.github/PULL_REQUEST_TEMPLATE.md` を、`fixes #{number}`、空行、`サマリ`、`変更範囲`、`テスト`、`暫定判断・懸念` の順で作成する。本文の各セクションは埋める対象を示すコメントにし、具体的な PR 内容は固定しない。
+- [x] initializer で `.codex/skills/pull-request-workflow/` と `SKILL.md` / `agents/openai.yaml` を作成する。UI metadata は通常の自動 discovery を維持し、default prompt は `$pull-request-workflow` を明示する。
+- [x] skill に、現在ブランチから Issue 番号を取得し、`gh issue view` で Issue title / Assignees を取得する手順を記載する。番号・Assignees・HLD / Plan・差分・検証結果のいずれかを取得・確定できない場合は、push / PR 作成を行わず停止する。
+- [x] skill に、変更内容ベースの短い title と、テンプレートの `fixes #{number}` / サマリ / 変更範囲 / テスト / 暫定判断・懸念を HLD / Plan / 差分 / 検証結果から下書きする手順を記載する。Issue Assignees が空なら PR Assignee を指定しない。
+- [x] skill に、title・本文・Assignees を表示してユーザーの明示承認を待つ境界を記載する。承認後のみ `git push -u origin <current-branch>` と、repository 既定 branch を base にする `gh pr create` を実行する。push 失敗時は PR を作成せず、PR 作成失敗時は remote branch が残ることを報告し、成功時は PR URL を最後に出力する。
+- [x] 独立したサブエージェントに template / skill を HLD・Plan と照合させ、確認前の外部変更、Assignee 引き継ぎ、push / PR 作成失敗、URL 出力の漏れをレビューさせる。検出事項は template / skill のみに反映する。
+- [x] `quick_validate.py`、`git diff --check`、frontmatter、skill 名、必須見出し、未完了 placeholder の静的検査を実行する。実装中は push、PR 作成を行わない。commit はユーザーから明示依頼を受けた場合だけ実行する。
+- [x] Review に作成内容、独立レビュー、検証結果を記録する。
+
 ## Review
 
 ### 2026-09-07 00:00 : Issue #1 初期実装
@@ -101,3 +135,9 @@
 - red テスト再レビュー: JS/Python helper の lifecycle、全 `AWS_ENDPOINT_URL_*` の保存・削除・復元、start / destroy の失敗時挙動、および helper 経由の SDK endpoint 利用を追加し、独立レビューで red テスト仕様の承認を得た。
 - 実装: Go `net/http` サーバーに session-scoped Control API、Scenario YAML の厳格検証、matcher、sequence/history、7 Operation/4 protocol、AWS 形式 error、UUID v4 request ID、同梱 defaults loader を実装した。JS/Python helper と unit test、固定依存、Compose healthcheck、直列 SDK test 用 Makefile を追加した。
 - green 検証: `make go-test`、`npm --prefix packages/sdk/javascript test`、`python3 -m unittest discover -s packages/sdk/python -p 'test_*.py'`、`make sdk-test`、`git diff --check` が成功した。`make test` も defaults loader 追加前の同一構成で成功し、追加後は Go unit test と SDK integration test を再実行して成功した。基準ブランチは `main` ではなく `master` のため、差分確認は `master` を用いた。
+
+### 2026-09-08 17:24 : PR テンプレートと作成 workflow
+
+- 作成内容: `.github/PULL_REQUEST_TEMPLATE.md` に Issue close 行、サマリ、変更範囲、テスト、暫定判断・懸念のテンプレートを追加した。`.codex/skills/pull-request-workflow` に、dirty worktree の停止、Issue / Assignees /既定 base branch の取得、確認表示後の push / PR 作成、失敗時の停止、成功時 URL 出力を定義した。
+- 独立レビュー: 必須の変更範囲・テスト結果・暫定判断・懸念を確定できない場合と、既定 base branch を取得できない場合の停止条件が不足していることを検出し、skill に補完した。承認境界、Assignee 引き継ぎ、失敗時挙動、URL 出力は HLD / Plan と整合することを確認した。
+- 検証: `quick_validate.py` と UI metadata generator は PyYAML 未導入により `ModuleNotFoundError` となった。代替として frontmatter、metadata の説明長、`$pull-request-workflow` を含む default prompt、テンプレートの必須見出し、未完了 placeholder 不在、`git diff --check` を静的に検査する。commit、push、PR 作成は実行していない。
