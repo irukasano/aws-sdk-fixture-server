@@ -1,0 +1,3 @@
+interface:
+  display_name: "Implementation Workflow"
+  short_description: "Implement approved plans with red/green verification"

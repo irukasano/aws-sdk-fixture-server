@@ -1,0 +1,3 @@
+interface:
+  display_name: "Commit Workflow"
+  short_description: "Commit approved work with Issue references"
