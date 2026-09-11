@@ -1,0 +1,7 @@
+service: sqs
+protocol: aws-json-1.0
+defaults:
+  response:
+    headers:
+      Content-Type: application/x-amz-json-1.0
+      x-amzn-requestid: ${request_id}

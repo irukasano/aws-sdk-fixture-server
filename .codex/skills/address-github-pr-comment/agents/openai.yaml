@@ -1,0 +1,4 @@
+interface:
+  display_name: "Address GitHub PR Comments"
+  short_description: "Handle unreplied PR line comments safely"
+  default_prompt: "Use $address-github-pr-comment to handle the review comments for #2."

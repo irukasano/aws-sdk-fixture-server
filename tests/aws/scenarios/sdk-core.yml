@@ -1,0 +1,64 @@
+name: sdk-core
+responses:
+  - service: secretsmanager
+    operation: GetSecretValue
+    match:
+      SecretId: test/db
+    response:
+      Name: test/db
+      SecretString: '{"host":"db"}'
+
+  - service: s3
+    operation: GetObject
+    match:
+      Bucket: test-bucket
+      Key: hello.txt
+    response:
+      body: hello world
+      headers:
+        Content-Type: text/plain
+        ETag: '"abc123"'
+
+  - service: s3
+    operation: PutObject
+    match:
+      Bucket: test-bucket
+      Key: upload.txt
+    response:
+      ETag: '"upload123"'
+
+  - service: s3
+    operation: HeadObject
+    match:
+      Bucket: test-bucket
+      Key: hello.txt
+    response:
+      ContentLength: 11
+      ETag: '"abc123"'
+
+  - service: sqs
+    operation: SendMessage
+    match:
+      QueueUrl: "*"
+      MessageBody:
+        contains: hello
+    response:
+      MessageId: message-1
+
+  - service: bedrock-runtime
+    operation: InvokeModel
+    match:
+      modelId: test-model
+    response:
+      body: '{"completion":"fixture response"}'
+
+  - service: bedrock-runtime
+    operation: Converse
+    match:
+      modelId: test-model
+    response:
+      output:
+        message:
+          role: assistant
+          content:
+            - text: fixture response

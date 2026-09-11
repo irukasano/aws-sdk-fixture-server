@@ -1,0 +1,6 @@
+service: s3
+protocol: rest-xml
+defaults:
+  response:
+    headers:
+      x-amz-request-id: ${request_id}

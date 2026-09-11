@@ -1,0 +1,4 @@
+interface:
+  display_name: "PR Workflow"
+  short_description: "Draft and create reviewed issue-linked pull requests"
+  default_prompt: "Use $pull-request-workflow to draft and create a PR for the current branch."
