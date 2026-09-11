@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests specify the public HTTP boundary. They deliberately use the
@@ -231,6 +232,76 @@ responses: [
 		t.Fatalf("invalid scenario JSON status = %d, body = %s", invalidJSONResponse.Code, invalidJSONResponse.Body.String())
 	}
 	assertControlError(t, invalidJSONResponse)
+}
+
+func TestAWSResponseWriteDoesNotBlockOtherSession(t *testing.T) {
+	scenarios := t.TempDir()
+	writeScenario(t, scenarios, "object.yml", `
+name: object
+responses:
+  - service: s3
+    operation: GetObject
+    match: { Bucket: test-bucket, Key: object }
+    response: { body: slow }
+`)
+	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	first := createSession(t, handler)
+	second := createSession(t, handler)
+	loadScenario(t, handler, first, "/scenarios/object.yml")
+	loadScenario(t, handler, second, "/scenarios/object.yml")
+
+	slow := newBlockingResponseWriter()
+	firstDone := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(slow, httptest.NewRequest(http.MethodGet, sessionAWSPath(first, "/test-bucket/object"), nil))
+		close(firstDone)
+	}()
+	<-slow.writeStarted
+
+	secondDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		secondDone <- s3Request(handler, second, http.MethodGet, "object", nil)
+	}()
+
+	timer := time.NewTimer(200 * time.Millisecond)
+	select {
+	case response := <-secondDone:
+		if response.Code != http.StatusOK {
+			t.Errorf("second session status = %d, want 200", response.Code)
+		}
+	case <-timer.C:
+		t.Errorf("second session AWS request was blocked by another session's response write")
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	close(slow.unblock)
+	<-firstDone
+	select {
+	case <-secondDone:
+	default:
+	}
+}
+
+type blockingResponseWriter struct {
+	header       http.Header
+	writeStarted chan struct{}
+	unblock      chan struct{}
+}
+
+func newBlockingResponseWriter() *blockingResponseWriter {
+	return &blockingResponseWriter{header: make(http.Header), writeStarted: make(chan struct{}), unblock: make(chan struct{})}
+}
+
+func (w *blockingResponseWriter) Header() http.Header { return w.header }
+func (w *blockingResponseWriter) WriteHeader(int)     {}
+func (w *blockingResponseWriter) Write(p []byte) (int, error) {
+	close(w.writeStarted)
+	<-w.unblock
+	return len(p), nil
 }
 
 func TestFixtureErrorDefaultsToBadRequest(t *testing.T) {

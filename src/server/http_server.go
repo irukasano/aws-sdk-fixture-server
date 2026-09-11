@@ -304,9 +304,9 @@ func (f *fixture) aws(w http.ResponseWriter, r *http.Request, id, stripped strin
 	}
 	service, op, params := normalize(r, stripped)
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if s.scenario == nil {
 		f.record(s, service, op, params, r, http.StatusInternalServerError, "unexpected", -1, "")
+		f.mu.Unlock()
 		f.awsError(w, r, http.StatusInternalServerError, "UNEXPECTED_AWS_REQUEST", "no matching fixture")
 		return
 	}
@@ -319,15 +319,18 @@ func (f *fixture) aws(w http.ResponseWriter, r *http.Request, id, stripped strin
 					st = http.StatusBadRequest
 				}
 				f.record(s, service, op, params, r, st, "error", idx, res.Error.Type)
+				f.mu.Unlock()
 				f.awsError(w, r, st, res.Error.Type, res.Error.Message)
 				return
 			}
 			f.record(s, service, op, params, r, http.StatusOK, "response", idx, "")
+			f.mu.Unlock()
 			f.awsResponse(w, r, service, res.Response)
 			return
 		}
 	}
 	f.record(s, service, op, params, r, http.StatusInternalServerError, "unexpected", -1, "")
+	f.mu.Unlock()
 	f.awsError(w, r, http.StatusInternalServerError, "UNEXPECTED_AWS_REQUEST", "no matching fixture")
 }
 func pick(d definition, seq map[int]int, i int) (result, int) {
