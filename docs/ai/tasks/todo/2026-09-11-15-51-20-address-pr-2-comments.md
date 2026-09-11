@@ -19,6 +19,18 @@
 - 未確定事項: なし。
 - ユーザー確認が必要な項目: 本 HLD の承認。
 
+### 2026-09-11 16:27:46 JST : マージ済み PR 後の記録 PR 作成
+
+- 目的: マージ済みの PR #2 に後続コミットを再マージできないため、追跡対象の task record と lesson を `master` へ反映する新規 PR を作成する。
+- 変更対象: `docs/ai/tasks/todo/2026-09-11-15-51-20-address-pr-2-comments.md`、`docs/ai/tasks/lessons.md`、新規 PR #3。
+- 非変更対象: `master` の直接更新、PR #2 の再オープン・再マージ、アプリケーションコード、PR #3 のマージ。
+- 入出力: base `master`、head `feature/enhancement#1`、Issue #1 を `fixes #1` で紐付け、Issue assignee `irukasano` を PR assignee に設定する。
+- 運用方法: PR テンプレート、Issue、default branch、マージ後差分、検証結果を確認し、ユーザー承認済みの title/body/base/assignee で作成する。
+- 失敗時挙動: push または PR 作成が失敗した場合、PR を作成せず原因を報告する。
+- 既存機能への影響: 実行時の機能変更はない。
+- 未確定事項: なし。
+- ユーザー確認が必要な項目: PR 内容は承認済み。
+
 ## Plan
 
 ### 2026-09-11 15:51:20 JST : Issue #1 に紐づく PR #2 の行コメント対応
@@ -42,6 +54,13 @@
 - [x] 以後の整形と完全検証はリポジトリ標準の `make test` を使用する。これは Go 単体テストを `golang:1.27.1` Docker 環境で実行し、その後 Docker Compose の `aws-fixture` サービスを起動して JavaScript / TypeScript・Python の AWS SDK 互換テストを実行する。対象 Go ファイルは同じ Go Docker 環境で `gofmt` した。
 - [x] この Docker 検証への変更について、ユーザーの承認後に green 検証から再開した。
 
+### 2026-09-11 16:27:46 JST : マージ済み PR 後の記録 PR 作成
+
+- [x] PR #2 が `MERGED` であり再オープン不可であることを確認した。
+- [x] `origin/master` を取得し、後続差分が task record と lesson の 2 ファイルだけであることを確認した。
+- [x] PR テンプレート、Issue #1 の title/assignee、default branch、差分、検証結果を確認し、PR title/body/base/assignee をユーザーに提示して承認を得た。
+- [x] `feature/enhancement#1` を upstream 付きで push し、`master` 宛て・Issue #1 の assignee を設定した PR #3 を作成した。
+
 ## Review
 
 ### 2026-09-11 15:51:20 JST : Issue #1 に紐づく PR #2 の行コメント対応
@@ -56,3 +75,8 @@
 - commit・返信: `dbf7ac1 refs #1 Release fixture lock before response write`。返信 URL: https://github.com/irukasano/aws-sdk-fixture-server/pull/2#discussion_r3986803157
 - `PRRT_kwDOUQ5lBs6gKcuG` 判定: コード変更不要。唯一の Scenario load 経路 `f.load` は `validateMatcher` から `regexp.Compile` を実行し、失敗を HTTP 400 として返す。matcher/definition 型は非公開で、無効 regex を session state に入れる別経路はないため、`match` の `regexp.MustCompile` には外部入力の不正値で到達しない。返信 URL: https://github.com/irukasano/aws-sdk-fixture-server/pull/2#discussion_r3986804848
 - push: `origin/feature/enhancement#1` へ `9c05e39..dbf7ac1` を 1 回 push した。review thread の resolve、PR 作成、merge は行っていない。
+
+### 2026-09-11 16:27:46 JST : マージ済み PR 後の記録 PR 作成
+
+- 結果: PR #2 は `MERGED` のため再オープン・再マージできない。`origin/master...HEAD` の差分が task record と lesson のみであることを確認し、承認済み内容で PR #3 を作成した。
+- PR: https://github.com/irukasano/aws-sdk-fixture-server/pull/3
