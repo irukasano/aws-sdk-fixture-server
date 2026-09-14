@@ -45,8 +45,8 @@ def test_application_sdk_client_uses_fixture_session_endpoint():
             lambda: cognito.admin_create_user(UserPoolId="pool", Username="fixture-user"),
             lambda: cognito.admin_update_user_attributes(UserPoolId="pool", Username="fixture-user", UserAttributes=[]),
             lambda: cognito.list_users(UserPoolId="pool"),
-            lambda: cognito.initiate_auth(ClientId="client", AuthFlow="USER_PASSWORD_AUTH"),
-            lambda: cognito.respond_to_auth_challenge(ClientId="client", ChallengeName="PASSWORD_VERIFIER"),
+            lambda: cognito.initiate_auth(ClientId="client", AuthFlow="USER_PASSWORD_AUTH", AuthParameters={"USERNAME": "fixture-user", "PASSWORD": "fixture-password"}),
+            lambda: cognito.respond_to_auth_challenge(ClientId="client", ChallengeName="PASSWORD_VERIFIER", ChallengeResponses={"USERNAME": "fixture-user", "PASSWORD_CLAIM_SIGNATURE": "fixture-signature"}),
         ]
         for call in calls:
             call()
