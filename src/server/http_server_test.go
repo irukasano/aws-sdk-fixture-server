@@ -207,9 +207,9 @@ responses: [
 			t.Fatalf("%s load status = %d, body = %s", name, loaded.Code, loaded.Body.String())
 		}
 		assertControlError(t, loaded)
-		unexpected := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "anything")
-		if unexpected.Code != http.StatusInternalServerError || !bytes.Contains(unexpected.Body.Bytes(), []byte("UNEXPECTED_AWS_REQUEST")) {
-			t.Fatalf("%s must clear scenario: (%d, %s)", name, unexpected.Code, unexpected.Body.String())
+		fallback := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "anything")
+		if fallback.Code != http.StatusOK || !bytes.Contains(fallback.Body.Bytes(), []byte("fixture-message")) {
+			t.Fatalf("%s must clear scenario and restore defaults: (%d, %s)", name, fallback.Code, fallback.Body.String())
 		}
 	}
 

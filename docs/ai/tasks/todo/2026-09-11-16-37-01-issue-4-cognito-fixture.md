@@ -14,6 +14,12 @@
 
 ## Plan
 
+### 2026-09-14 12:00 : PR #5 review - defaults root compatibility
+
+- [x] `DefaultsRoot` 未指定時に bundled `defaults` を読む既存契約を復元する。
+- [x] 最小の RED test で zero-value `Config` の default Scenario と、test 内で OIDC 設定を空にした 409 を確認する。
+- [x] 独立レビュー、Go test、差分確認、scope-only commit、review thread reply を実施する。
+
 ### 2026-09-11 16:37:01 JST : Issue #4 Cognito User Pool API と JWT/JWKS Fixture
 
 - [x] HLD の未確定仕様を一件ずつ合意し、HLD 全体の承認を得た。

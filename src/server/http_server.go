@@ -79,7 +79,7 @@ func NewHandler(c Config) (http.Handler, error) {
 	}
 	defaultsRoot := c.DefaultsRoot
 	if defaultsRoot == "" {
-		return &fixture{root: root, defaults: map[string]map[string]string{}, sessions: map[string]*session{}}, nil
+		defaultsRoot = "defaults"
 	}
 	if defaultsRoot == "defaults" {
 		defaultsRoot = filepath.Join("..", "..", "defaults")

@@ -351,6 +351,7 @@ func TestCognitoFixtureTestKeyIsRSA2048(t *testing.T) {
 
 func TestOIDCRoutesDistinguishMissingConfigurationAndUnknownSessions(t *testing.T) {
 	handler := mustNewHandler(t, Config{ScenarioRoot: t.TempDir()})
+	handler.(*fixture).oidc = nil
 	session := createSession(t, handler)
 	for _, suffix := range []string{"/.well-known/openid-configuration", "/.well-known/jwks.json"} {
 		response := httptest.NewRecorder()
@@ -360,6 +361,14 @@ func TestOIDCRoutesDistinguishMissingConfigurationAndUnknownSessions(t *testing.
 	unknown := httptest.NewRecorder()
 	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "/__fixture/sessions/missing/oidc/ap-northeast-1_test/.well-known/jwks.json", nil))
 	assertOIDCError(t, unknown, http.StatusNotFound, "NOT_FOUND")
+}
+
+func TestNewHandlerUsesBundledDefaultsWhenDefaultsRootIsOmitted(t *testing.T) {
+	handler := mustNewHandler(t, Config{ScenarioRoot: t.TempDir()})
+	session := createSession(t, handler)
+	if response := cognitoRequest(handler, session, "AdminGetUser", `{"UserPoolId":"pool","Username":"fixture-user"}`); response.Code != http.StatusOK {
+		t.Fatalf("omitted DefaultsRoot must use bundled defaults = (%d, %s)", response.Code, response.Body.String())
+	}
 }
 
 func TestScenarioOIDCUserPoolOverrideChangesReturnedIssuer(t *testing.T) {
