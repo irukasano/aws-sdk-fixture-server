@@ -14,6 +14,11 @@
 
 ## Plan
 
+### 2026-09-14 12:10 : PR #5 review - JavaScript Cognito required inputs
+
+- [ ] InitiateAuth の `AuthParameters` と RespondToAuthChallenge の `ChallengeResponses` が fixture request history に到達する RED test を追加する。
+- [ ] 独立レビュー、最小修正、SDK integration と Go test、scope-only commit、review thread reply を実施する。
+
 ### 2026-09-14 12:00 : PR #5 review - defaults root compatibility
 
 - [x] `DefaultsRoot` 未指定時に bundled `defaults` を読む既存契約を復元する。

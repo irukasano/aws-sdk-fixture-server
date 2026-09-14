@@ -24,8 +24,11 @@ test("AWS SDK client created by the application uses the FixtureSession endpoint
     assert.equal(result.SecretString, '{"host":"db"}');
 
     const cognito = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
-    const commands = [new AdminGetUserCommand({ UserPoolId: "pool", Username: "fixture-user" }), new AdminCreateUserCommand({ UserPoolId: "pool", Username: "fixture-user" }), new AdminUpdateUserAttributesCommand({ UserPoolId: "pool", Username: "fixture-user", UserAttributes: [] }), new ListUsersCommand({ UserPoolId: "pool" }), new InitiateAuthCommand({ ClientId: "client", AuthFlow: "USER_PASSWORD_AUTH" }), new RespondToAuthChallengeCommand({ ClientId: "client", ChallengeName: "PASSWORD_VERIFIER" })];
+    const commands = [new AdminGetUserCommand({ UserPoolId: "pool", Username: "fixture-user" }), new AdminCreateUserCommand({ UserPoolId: "pool", Username: "fixture-user" }), new AdminUpdateUserAttributesCommand({ UserPoolId: "pool", Username: "fixture-user", UserAttributes: [] }), new ListUsersCommand({ UserPoolId: "pool" }), new InitiateAuthCommand({ ClientId: "client", AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: "fixture-user", PASSWORD: "fixture-password" } }), new RespondToAuthChallengeCommand({ ClientId: "client", ChallengeName: "PASSWORD_VERIFIER", ChallengeResponses: { USERNAME: "fixture-user", PASSWORD_CLAIM_SIGNATURE: "fixture-signature" } })];
     for (const command of commands) await cognito.send(command);
+    const authRequests = await fixture.requests();
+    assert.deepEqual(authRequests.find((request) => request.operation === "InitiateAuth")?.parameters.AuthParameters, { USERNAME: "fixture-user", PASSWORD: "fixture-password" });
+    assert.deepEqual(authRequests.find((request) => request.operation === "RespondToAuthChallenge")?.parameters.ChallengeResponses, { USERNAME: "fixture-user", PASSWORD_CLAIM_SIGNATURE: "fixture-signature" });
     await fixture.loadScenario("/scenarios/cognito-errors.yml");
     for (const command of commands) await assert.rejects(cognito.send(command), /fixture error/);
   } finally {
