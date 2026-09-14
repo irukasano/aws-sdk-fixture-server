@@ -30,6 +30,14 @@ def test_application_sdk_client_uses_fixture_session_endpoint():
         )
         assert send_result["MessageId"] == "message-1"
 
+        sesv2 = boto3.client("sesv2")
+        email_result = sesv2.send_email(
+            FromEmailAddress="sender@example.test",
+            Destination={"ToAddresses": ["recipient@example.test"]},
+            Content={"Simple": {"Subject": {"Data": "subject"}, "Body": {"Text": {"Data": "body"}}}},
+        )
+        assert email_result["MessageId"] == "fixture-message"
+
         bedrock = boto3.client("bedrock-runtime")
         invoke_result = bedrock.invoke_model(
             modelId="test-model",
@@ -55,9 +63,21 @@ def test_application_sdk_client_uses_fixture_session_endpoint():
             item["service"] == "s3" and item["operation"] == "PutObject"
             for item in history
         )
+        assert any(
+            item["service"] == "sesv2"
+            and item["operation"] == "SendEmail"
+            and item["parameters"]["Content"]["Simple"]["Subject"]["Data"] == "subject"
+            for item in history
+        )
         fixture.load_scenario("/scenarios/cognito-errors.yml")
         for call in calls:
             with pytest.raises(cognito.exceptions.NotAuthorizedException):
                 call()
+        fixture.load_scenario("/scenarios/ses-errors.yml")
+        with pytest.raises(sesv2.exceptions.MessageRejected):
+            sesv2.send_email(
+                FromEmailAddress="rejected@example.test",
+                Content={"Raw": {"Data": b"raw message"}},
+            )
     finally:
         fixture.destroy()

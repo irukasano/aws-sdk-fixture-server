@@ -130,7 +130,7 @@ func loadBundledDefaults(root string) (map[string]map[string]string, *scenario, 
 	}
 	configRoot := filepath.Join(root, "config")
 	headers := map[string]map[string]string{}
-	for _, service := range []string{"s3", "secretsmanager", "sqs", "bedrock-runtime", "cognito-idp"} {
+	for _, service := range []string{"s3", "secretsmanager", "sqs", "bedrock-runtime", "cognito-idp", "sesv2"} {
 		data, err := os.ReadFile(filepath.Join(configRoot, service+".yml"))
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("required defaults config for %s: %w", service, err)
@@ -530,6 +530,9 @@ func normalize(r *http.Request, path string) (string, string, map[string]any) {
 	p := map[string]any{}
 	body, _ := io.ReadAll(r.Body)
 	_ = json.Unmarshal(body, &p)
+	if r.Method == http.MethodPost && path == "/v2/email/outbound-emails" {
+		return "sesv2", "SendEmail", p
+	}
 	target := r.Header.Get("X-Amz-Target")
 	if target != "" {
 		a := strings.Split(target, ".")
@@ -647,7 +650,9 @@ func (f *fixture) awsResponse(w http.ResponseWriter, r *http.Request, svc string
 }
 func (f *fixture) awsError(w http.ResponseWriter, r *http.Request, status int, typ, msg string) {
 	svc := ""
-	if r.Header.Get("X-Amz-Target") != "" {
+	if strings.Contains(r.URL.Path, "/aws/v2/") {
+		svc = "sesv2"
+	} else if r.Header.Get("X-Amz-Target") != "" {
 		svc, _, _ = normalize(r, "")
 	} else if !strings.Contains(r.URL.Path, "/model/") {
 		svc = "s3"
@@ -665,6 +670,9 @@ func (f *fixture) awsError(w http.ResponseWriter, r *http.Request, status int, t
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	} else {
 		w.Header().Set("Content-Type", "application/json")
+	}
+	if svc == "sesv2" {
+		w.Header().Set("x-amzn-errortype", typ)
 	}
 	w.Header().Set("x-amzn-requestid", uuid4())
 	writeJSONBody(w, status, map[string]string{"__type": typ, "message": msg})

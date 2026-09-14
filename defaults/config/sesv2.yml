@@ -1,0 +1,7 @@
+service: sesv2
+protocol: rest-json
+defaults:
+  response:
+    headers:
+      Content-Type: application/json
+      x-amzn-requestid: ${request_id}

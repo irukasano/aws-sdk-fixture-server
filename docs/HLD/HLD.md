@@ -966,6 +966,26 @@ Streaming APIはAWS EventStream等のprotocol対応が必要になるため、�
 
 ---
 
+## 15.5 Amazon SES
+
+Amazon SES は API v2 の `SendEmail` だけを Fixture 方式の対象とする。SES API v1 は対象外とする。
+
+`SendEmail` は REST/JSON の `POST /v2/email/outbound-emails` としてルーティングする。Fixture Server は `Content.Simple`、`Content.Raw`、`Content.Template` のいずれかを業務的に検証せず、正規化した入力を Scenario の照合と Request History に渡す。一致した Scenario が定義する成功またはエラー応答を返す。
+
+server 同梱の default Scenario は入力値を問わず `MessageId: fixture-message` を返す。
+
+通常の Scenario Fixture は `MessageRejected`・HTTP 400 のエラー応答を定義できる。Fixture Server はこれを SES API v2 形式で返し、Go 単体テストで検証する。
+
+SES の正規化済みリクエスト全体は、既存の session 内 Request History に記録する。これは Control API または helper からテストが検証するための記録であり、実メールの送信履歴ではない。
+
+JavaScript と Python の AWS SDK 互換テストは、default Scenario の成功応答と、Scenario Fixture が定義する `MessageRejected` エラー応答を `SendEmail` 経由でそれぞれ検証する。
+
+対象外の SES API v2 Operation、および通常 Scenario に一致しない request は、既存サービスと同じ AWS 形式の HTTP `500` / `UNEXPECTED_AWS_REQUEST` を返す。
+
+実メール送受信、DNS、SES identity 検証、sandbox 状態、メール本文の妥当性検証、OTP の生成・状態管理・有効期限・照合は行わない。
+
+---
+
 # 16. Later Target Services
 
 初期実装後の追加候補とする。

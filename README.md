@@ -13,6 +13,7 @@
 | SQS | `SendMessage` |
 | Bedrock Runtime | `InvokeModel`, `Converse` |
 | Cognito IDP | `AdminGetUser`, `AdminCreateUser`, `AdminUpdateUserAttributes`, `ListUsers`, `InitiateAuth`, `RespondToAuthChallenge` |
+| SES v2 | `SendEmail` |
 
 Cognito IDP では、各 session / user pool 固有の OIDC discovery document、JWKS、RS256 で署名した JWT を提供します。JWT は `InitiateAuth` と `RespondToAuthChallenge` の `AuthenticationResult.AccessToken` / `IdToken` でのみ利用できます。
 
@@ -163,6 +164,11 @@ responses:
     operation: GetSecretValue
     match: { SecretId: test/db }
     response: { Name: test/db, SecretString: '{"host":"db"}' }
+
+  - service: sesv2
+    operation: SendEmail
+    match: { FromEmailAddress: sender@example.test }
+    response: { MessageId: fixture-message }
 
   - service: sqs
     operation: SendMessage

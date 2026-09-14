@@ -1,0 +1,10 @@
+name: ses-errors
+responses:
+  - service: sesv2
+    operation: SendEmail
+    match:
+      FromEmailAddress: rejected@example.test
+    error:
+      type: MessageRejected
+      message: rejected by fixture
+      status: 400

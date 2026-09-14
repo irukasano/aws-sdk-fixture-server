@@ -3,7 +3,7 @@ services:
     build:
       context: .
     ports:
-      - "4566:4566"
+      - "${FIXTURE_HOST_PORT:-4566}:4566"
     volumes:
       - ./tests/aws/scenarios:/scenarios:ro
     healthcheck:
