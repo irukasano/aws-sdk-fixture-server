@@ -27,7 +27,18 @@
 - 失敗時挙動: `FIXTURE_HOST_PORT` が Docker の port mapping として無効、または指定 host port が使用中なら、Compose が起動失敗を返す。
 - 既存機能への影響: Docker network 内の service discovery は変更しない。host からアクセスする利用者だけが指定した host port を使う。
 - ユーザー確認が必要な項目: この HLD の明示承認。
+- 2026-09-15 08:35:48 JST: ユーザーが HLD を承認した。
 - 2026-09-15 08:26:01 JST: ユーザーが HLD を承認した。
+
+### 2026-09-15 08:35 : README SES v2 usage
+
+- 目的: 利用者が SES API v2 `SendEmail` の対応状況と Scenario 定義方法を README だけで把握できるようにする。
+- 変更対象: `README.md` の対応範囲表に `SES v2` / `SendEmail` を追加し、Scenario 節に `service: sesv2`、`operation: SendEmail`、成功 response の `MessageId` を示す短い YAML 例を追加する。
+- 非変更対象: Fixture Server、SDK helper、Scenario schema、default response、既存サービスの説明、README 以外の文書。
+- 入出力・運用方法: 利用者は例を project-owned Scenario の出発点として使い、必要に応じて既存の matcher / error 方式で拡張する。
+- 失敗時挙動: ドキュメント変更のみのため runtime failure は追加しない。
+- 既存機能への影響: なし。
+- ユーザー確認が必要な項目: この HLD の明示承認。
 - 2026-09-14 16:09:46 JST: ユーザー指定により、合意済み SES HLD はこの session 記録だけでなく `docs/HLD/HLD.md` にも反映する。
 
 ## Plan
@@ -53,6 +64,14 @@
 - [x] 承認済みの本 session の commit workflow に従い、関連ファイルだけを stage・検査して `refs #6` を先頭にした追加 commit を作成する。push はしない。2026-09-15 08:28:15 JST に `c5737f2 refs #6 Make fixture host port configurable` を作成。
 - 2026-09-15 08:26:30 JST: ユーザーが Plan を承認した。
 
+### 2026-09-15 08:35 : README SES v2 usage
+
+- [x] README の対応範囲表に `SES v2` / `SendEmail` を追加する。
+- [x] Scenario 節の最小例に、`sesv2` / `SendEmail` と `MessageId` を示す success response を追加する。既存の matcher / error 説明を複製しない。
+- [x] `git diff --check` と README diff review で Markdown 構造、既存説明への影響、HLD 範囲を確認する。成功。
+- [x] 承認済みの本 session の commit workflow に従い、README と task record だけを stage・検査して `refs #6` を先頭にした追加 commit を作成する。push はしない。`9889088 refs #6 Document SES v2 SendEmail usage` を作成。
+- 2026-09-15 08:36:12 JST: ユーザーが Plan を承認した。
+
 ## Review
 
 ### 2026-09-14 16:04 : Issue #6 implementation
@@ -67,3 +86,8 @@
 
 - HLD 作成。実装・検証は未実施。
 - 2026-09-15 08:27:44 JST: `${FIXTURE_HOST_PORT:-4566}:4566` を実装。default と `FIXTURE_HOST_PORT=14566` の Compose config を確認し、14566 で起動した container が healthy、host health endpoint が HTTP 200 となることを確認した。検証 resource は `docker compose down` で削除。`make go-test` と `git diff --check` は成功。
+
+### 2026-09-15 08:35 : README SES v2 usage
+
+- HLD 作成。実装・検証は未実施。
+- 2026-09-15 08:36 JST: 対応範囲表と Scenario の最小 example に SES v2 `SendEmail` を追加。`git diff --check` は成功。
