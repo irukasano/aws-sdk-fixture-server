@@ -23,16 +23,16 @@ async function request(url, method, payload) {
 export class FixtureSession {
   static async start({ serverUrl }) {
     const created = await request(`${serverUrl}/__fixture/sessions`, "POST");
-    if (!created?.sessionId || !created?.endpoint) throw new Error("invalid session response");
+    if (!created?.sessionId || !created?.endpoint || !created?.issuer) throw new Error("invalid session response");
     const savedEndpoints = endpointSnapshot();
     for (const key of Object.keys(savedEndpoints)) delete process.env[key];
     process.env.AWS_ENDPOINT_URL = created.endpoint;
-    return new FixtureSession(serverUrl, created.sessionId, savedEndpoints);
+    return new FixtureSession(serverUrl, created.sessionId, created.issuer, savedEndpoints);
   }
 
-  constructor(serverUrl, sessionId, savedEndpoints) { this.serverUrl = serverUrl; this.sessionId = sessionId; this.savedEndpoints = savedEndpoints; }
+  constructor(serverUrl, sessionId, issuer, savedEndpoints) { this.serverUrl = serverUrl; this.sessionId = sessionId; this.issuer = issuer; this.savedEndpoints = savedEndpoints; }
   control(path) { return `${this.serverUrl}/__fixture/sessions/${this.sessionId}${path}`; }
-  loadScenario(path) { return request(this.control("/scenario"), "POST", { path }); }
+  async loadScenario(path) { const loaded = await request(this.control("/scenario"), "POST", { path }); if (loaded?.issuer) this.issuer = loaded.issuer; return loaded; }
   reset() { return request(this.control("/reset"), "POST"); }
   requests() { return request(this.control("/requests"), "GET"); }
   async destroy() { try { await request(this.control(""), "DELETE"); } finally { restoreEndpoints(this.savedEndpoints); } }

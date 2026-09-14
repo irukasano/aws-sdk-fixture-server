@@ -1,0 +1,5 @@
+name: default-s3
+responses:
+  - { service: s3, operation: GetObject, response: { body: "" } }
+  - { service: s3, operation: PutObject, response: { ETag: '"fixture-etag"' } }
+  - { service: s3, operation: HeadObject, response: {} }

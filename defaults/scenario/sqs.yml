@@ -1,0 +1,3 @@
+name: default-sqs
+responses:
+  - { service: sqs, operation: SendMessage, response: { MessageId: fixture-message } }

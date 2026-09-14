@@ -1,0 +1,35 @@
+service: cognito-idp
+protocol: aws-json-1.0
+oidc:
+  user_pool_id: ap-northeast-1_test
+  signing_key:
+    kid: fixture-default-rs256
+    private_key_pem: |
+      -----BEGIN PRIVATE KEY-----
+      MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC4NZsRuGy6BeDv
+      yA8E9NAjOe/FzyLRPjmSQZYrLvhpOVYzs8kSsVtb6rSaJ2fUNqZZdhMH4WJpBdWM
+      VkdIkB4CyuIauSIfXmTsBvUX7aAgYGhE+RqKQgflIQeIQjqIYm28QUip4OKxErGJ
+      /pDZh490tYQ7ET0oL4ghqvSJBXumoXBDXNg1aTWhfJRN47+mFKb7zRJLmzo970Ws
+      mwzhi8hrubUSoOlpo7Gt0kyX9eK3sHPDvavGOw6t4HPohoL9OHvc07ZdWdYMbwEs
+      +Mw8HbD+qDZqOBQABdas6mx4OvaO4OU02FMIHLElm/t8ixzDV0doUWnhetxPXM7W
+      HIIwvtLTAgMBAAECggEAEPS6O+TWeT8OR/QJ0eJ5AC0WkYYyBcGtCfXojTwLGKBy
+      +1pasVJK/wh5LFFhQMrw//4a3VhVNyaW1A6jDB5b7NThACW3atzE/Gbdi6DPYvuM
+      zYCCfWR7lo82QsgZ3DD3OeNmfWCabUMzvWiFy8grH8qPi+JX10mcxcCXNr+e9KTy
+      g4jxR+sjiOGbwDuGSfy+GyE908csxHT/sN8fc1TDTtxWNCq68QMCzaewamyV9SNk
+      PC9TmqlNmdoquzysATRH3sWy+7Lekc488uRapFnzjaXErsg0lIGlvAJ+WPiMJFUZ
+      6tD3Pxx53Wu4xqTeY8oPmaAaq/wtQ4E/d9niKoFs4QKBgQDmzlS6BRDyLYs2Fch8
+      isgFE9/mmcc0ns0yaMsCjlK+zpdtmQX73Q9X584r47onNSqCJg6gSwdmvPVupWB1
+      M3VtPKTZrRLHB5BZsb7oierUrfwb0lF2ZIed1R0IZlzCS+5x0VR2M8ozoz2ZPfB+
+      UcAF9BP8euoGTQyON3UK0mHNMwKBgQDMUSyp8GrKBOagPIIbV8U730EtGB89QCti
+      RDlFGh1ynlDkrpcgD1RM2C3szIyviH3zKWISzVeWv2IH8Jz5BUR3Cgno9QgMwy+M
+      l5UQPvqSffsrvFZr11yaFIp5X+R64aZ/3l/lDxEIUwxIC6cHvnIrrRNL1FBSTHin
+      RSlHnFaj4QKBgQDCbDCG+lmKB79q8fKOpsFTNai4MfXSZ6rmucu4/XbKcHCyy+J0
+      hYS1Qfk0k4JuIKUMOU68zDcR3j7I09prH8vdFuauztIwgjigtc/hRrxgJ6dlMEea
+      +Zgb5jesqb2dliToD7OcVogP84SiH8EER4z/9tkXJ9sXL7RR4HlhglMMbQKBgF8F
+      VX9HN3LyqotU+LFctXat0rL1J/olcMfHsNbJWW6n4DkqVVBssKj4VQtu6fLsyJ6g
+      3WKfKyAJq77DkU1ivL+b5JX59x9wWxnImWOv1nrwqjJh6dNHmmJyMSBXj3vym6uW
+      MQTnZ+V2Mh0Dhk/cq15SpMm8WQqdU/N+/761H7ohAoGAT2wVChj81yNFJaqTfXf2
+      TruxK4Y9iv87Iovuh7hnji0ODWKsFBNnDmH2qDwfFOZhrFFA6fZiqzEKhHtbH1FC
+      W3uIHjB/bwwB2tGe3wQ3CRrVq8NmSn5CkbmHm9mIYT6NsJ28oINBV9xtnDwepMHO
+      lsNcXLpkjB5VO9LIq9Jw00U=
+      -----END PRIVATE KEY-----
