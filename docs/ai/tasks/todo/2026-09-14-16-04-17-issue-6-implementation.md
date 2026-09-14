@@ -17,6 +17,17 @@
 - 合意済み: 対象外の SES API v2 Operation と通常 Scenario に一致しない request は、既存サービスと同じ AWS 形式の HTTP `500` / `UNEXPECTED_AWS_REQUEST` を返す。
 - HLD draft: SES API v2 の `SendEmail` だけを REST/JSON で追加する。Scenario routing・error・request history は既存の session 単位の共通機構を使う。新規 default config / Scenario、Go 単体テスト、JavaScript/Python SDK 互換テストを追加する。既存 service、実メール処理、SES 内部状態、v1 API は変更しない。default Scenario は全入力に固定 `MessageId: fixture-message` を返し、通常 Scenario は全本文形式を業務検証せずに照合でき、`MessageRejected` HTTP 400 を返せる。対象外・不一致は `500 UNEXPECTED_AWS_REQUEST` とする。
 - 2026-09-14 16:20:02 JST: ユーザーが HLD draft を承認した。
+
+### 2026-09-15 08:25 : Compose host port configurability
+
+- 目的: host TCP port `4566` の競合時も、Fixture Server を Compose で起動できるようにする。
+- 変更対象: `docker-compose.yml` の `aws-fixture` の host-to-container port mapping。host port は `FIXTURE_HOST_PORT` を使い、未指定時は従来どおり `4566` とする。
+- 非変更対象: コンテナ内の待受 port `4566`、server の `PORT`、healthcheck、JavaScript/Python SDK test container の `http://aws-fixture:4566`、AWS API の挙動。
+- 入出力・運用方法: 通常は `docker compose up` で `4566:4566` を公開する。競合時は `FIXTURE_HOST_PORT=14566 docker compose up` のように host 側の公開 port だけを選ぶ。
+- 失敗時挙動: `FIXTURE_HOST_PORT` が Docker の port mapping として無効、または指定 host port が使用中なら、Compose が起動失敗を返す。
+- 既存機能への影響: Docker network 内の service discovery は変更しない。host からアクセスする利用者だけが指定した host port を使う。
+- ユーザー確認が必要な項目: この HLD の明示承認。
+- 2026-09-15 08:26:01 JST: ユーザーが HLD を承認した。
 - 2026-09-14 16:09:46 JST: ユーザー指定により、合意済み SES HLD はこの session 記録だけでなく `docs/HLD/HLD.md` にも反映する。
 
 ## Plan
@@ -33,6 +44,15 @@
 - [x] `commit-workflow` を適用する。承認済みスコープだけを stage し、staged diff と `git diff --cached --check` を確認後、`refs #6` を先頭にした commit を作成する。push はしない。2026-09-15 08:23:38 JST に `20e23aa refs #6 Add SES v2 SendEmail fixture` を作成。
 - 2026-09-14 16:20:54 JST: ユーザーが Plan を承認した。
 
+### 2026-09-15 08:25 : Compose host port configurability
+
+- [x] `docker-compose.yml` の host port mapping を `${FIXTURE_HOST_PORT:-4566}:4566` に置換する。コンテナ内 port、SDK test の service URL、server code は変更しない。
+- [x] `docker compose config` で未指定時に `4566:4566` となることを確認する。
+- [x] `FIXTURE_HOST_PORT=14566 docker compose config`、`FIXTURE_HOST_PORT=14566 docker compose up -d aws-fixture`、host の `http://127.0.0.1:14566/__fixture/health` への `200` を確認する。完了後は検証用 Compose resource を `docker compose down` で削除する。override は `14566:4566` に展開され、health endpoint は HTTP 200、container は healthy となった。
+- [x] `make go-test` と `git diff --check` を実行し、`master` との差分がこの HLD/Plan の範囲だけであることを確認する。`make go-test` と `git diff --check` は成功。現在の `HEAD` に対する差分は `docker-compose.yml` とこの task record のみ。
+- [x] 承認済みの本 session の commit workflow に従い、関連ファイルだけを stage・検査して `refs #6` を先頭にした追加 commit を作成する。push はしない。2026-09-15 08:28:15 JST に `c5737f2 refs #6 Make fixture host port configurable` を作成。
+- 2026-09-15 08:26:30 JST: ユーザーが Plan を承認した。
+
 ## Review
 
 ### 2026-09-14 16:04 : Issue #6 implementation
@@ -42,3 +62,8 @@
 - 2026-09-14 16:13:28 JST: HLD 策定中。合意済み内容を session 記録と `docs/HLD/HLD.md` に反映した。実装・テスト追加は未実施。
 - 2026-09-14 16:35:33 JST: RED test と独立レビューを完了し、SES v2 routing/default/error/history と SDK test を実装した。`make go-test` は成功。SDK verification は Docker Compose の `aws-fixture` が host port `4566` の使用中により network 起動できず未完了。外部の port 利用プロセスは変更せず、作成した Compose resource は `docker compose down` で削除した。
 - 2026-09-15 08:22:17 JST: ユーザー許可後に port `4566` の Docker container を確認したところ停止済みだった。Compose の fixture server を healthy に起動し、SDK test を実行。Scenario `use_defaults` の既存規則により error definition が default fallback を抑止することを発見したため、default success と error を別 Scenario に分離して修正。JavaScript `node --test test.mjs` と Python `pytest` は成功、`make go-test` と `git diff --check` も成功。独立実装レビューは承認。
+
+### 2026-09-15 08:25 : Compose host port configurability
+
+- HLD 作成。実装・検証は未実施。
+- 2026-09-15 08:27:44 JST: `${FIXTURE_HOST_PORT:-4566}:4566` を実装。default と `FIXTURE_HOST_PORT=14566` の Compose config を確認し、14566 で起動した container が healthy、host health endpoint が HTTP 200 となることを確認した。検証 resource は `docker compose down` で削除。`make go-test` と `git diff --check` は成功。
