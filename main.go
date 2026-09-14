@@ -12,5 +12,9 @@ func main() {
 	if port == "" {
 		port = "4566"
 	}
-	log.Fatal(http.ListenAndServe(":"+port, server.NewHandler(server.Config{ScenarioRoot: "/scenarios", DefaultsRoot: "/defaults"})))
+	handler, err := server.NewHandler(server.Config{ScenarioRoot: "/scenarios", DefaultsRoot: "/defaults"})
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }

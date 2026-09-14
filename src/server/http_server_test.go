@@ -35,7 +35,7 @@ responses:
     match: { SecretId: test/db }
     response: { Name: test/db, SecretString: second }
 `)
-	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	handler := mustNewHandler(t, Config{ScenarioRoot: scenarios})
 
 	health := httptest.NewRecorder()
 	handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/__fixture/health", nil))
@@ -85,7 +85,7 @@ responses:
       - error: { type: ThrottlingException, message: throttled, status: 429 }
       - response: { MessageId: message-1 }
 `)
-	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	handler := mustNewHandler(t, Config{ScenarioRoot: scenarios})
 	session := createSession(t, handler)
 	loadScenario(t, handler, session, "/scenarios/sequence.yml")
 
@@ -152,7 +152,7 @@ responses:
       MessageBody: { contains: patientId }
     response: { MessageId: matched }
 `)
-	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	handler := mustNewHandler(t, Config{ScenarioRoot: scenarios})
 	session := createSession(t, handler)
 	loadScenario(t, handler, session, "/scenarios/match.yml")
 
@@ -207,9 +207,9 @@ responses: [
 			t.Fatalf("%s load status = %d, body = %s", name, loaded.Code, loaded.Body.String())
 		}
 		assertControlError(t, loaded)
-		unexpected := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "anything")
-		if unexpected.Code != http.StatusInternalServerError || !bytes.Contains(unexpected.Body.Bytes(), []byte("UNEXPECTED_AWS_REQUEST")) {
-			t.Fatalf("%s must clear scenario: (%d, %s)", name, unexpected.Code, unexpected.Body.String())
+		fallback := sendMessage(handler, session, "https://sqs.us-east-1.amazonaws.com/123/queue", "anything")
+		if fallback.Code != http.StatusOK || !bytes.Contains(fallback.Body.Bytes(), []byte("fixture-message")) {
+			t.Fatalf("%s must clear scenario and restore defaults: (%d, %s)", name, fallback.Code, fallback.Body.String())
 		}
 	}
 
@@ -244,7 +244,7 @@ responses:
     match: { Bucket: test-bucket, Key: object }
     response: { body: slow }
 `)
-	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	handler := mustNewHandler(t, Config{ScenarioRoot: scenarios})
 	first := createSession(t, handler)
 	second := createSession(t, handler)
 	loadScenario(t, handler, first, "/scenarios/object.yml")
@@ -314,7 +314,7 @@ responses:
     match: { SecretId: missing }
     error: { type: ResourceNotFoundException, message: not found }
 `)
-	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	handler := mustNewHandler(t, Config{ScenarioRoot: scenarios})
 	session := createSession(t, handler)
 	loadScenario(t, handler, session, "/scenarios/error.yml")
 
@@ -370,7 +370,7 @@ responses:
           role: assistant
           content: [{ text: fixture response }]
 `)
-	handler := NewHandler(Config{ScenarioRoot: scenarios})
+	handler := mustNewHandler(t, Config{ScenarioRoot: scenarios})
 	session := createSession(t, handler)
 	loadScenario(t, handler, session, "/scenarios/all.yml")
 
@@ -445,6 +445,15 @@ func createSession(t *testing.T, handler http.Handler) string {
 		t.Fatalf("session payload = %#v", payload)
 	}
 	return payload.SessionID
+}
+
+func mustNewHandler(t *testing.T, config Config) http.Handler {
+	t.Helper()
+	handler, err := NewHandler(config)
+	if err != nil {
+		t.Fatalf("NewHandler(%+v): %v", config, err)
+	}
+	return handler
 }
 
 func loadScenario(t *testing.T, handler http.Handler, sessionID, path string) {

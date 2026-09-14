@@ -1,0 +1,19 @@
+# fixture-user is the default fixed identity; the fixture does not model user state.
+name: default-cognito
+responses:
+  - { service: cognito-idp, operation: AdminGetUser, response: { Username: fixture-user, Enabled: true, UserStatus: CONFIRMED } }
+  - { service: cognito-idp, operation: AdminCreateUser, response: { User: { Username: fixture-user, Enabled: true, UserStatus: CONFIRMED } } }
+  - { service: cognito-idp, operation: AdminUpdateUserAttributes, response: {} }
+  - { service: cognito-idp, operation: ListUsers, response: { Users: [{ Username: fixture-user, Enabled: true, UserStatus: CONFIRMED }] } }
+  - service: cognito-idp
+    operation: InitiateAuth
+    response: &auth
+      AuthenticationResult:
+        AccessToken: { jwt: { expires_in_seconds: 3600, claims: { sub: fixture-user } } }
+        IdToken: { jwt: { expires_in_seconds: 3600, claims: { sub: fixture-user } } }
+        TokenType: Bearer
+        ExpiresIn: 3600
+        RefreshToken: refresh-token-will-accept-any-value
+  - service: cognito-idp
+    operation: RespondToAuthChallenge
+    response: *auth

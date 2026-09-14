@@ -1,0 +1,4 @@
+name: default-bedrock
+responses:
+  - { service: bedrock-runtime, operation: InvokeModel, response: { body: '{}' } }
+  - { service: bedrock-runtime, operation: Converse, response: { body: '{}' } }

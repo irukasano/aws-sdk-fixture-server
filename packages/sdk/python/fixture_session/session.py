@@ -31,24 +31,28 @@ class FixtureSession:
     @classmethod
     def start(cls, *, server_url):
         created = _request(f"{server_url}/__fixture/sessions", "POST")
-        if not created or not created.get("sessionId") or not created.get("endpoint"):
+        if not created or not created.get("sessionId") or not created.get("endpoint") or not created.get("issuer"):
             raise RuntimeError("invalid session response")
         saved = _endpoint_environment()
         for key in saved:
             del os.environ[key]
         os.environ["AWS_ENDPOINT_URL"] = created["endpoint"]
-        return cls(server_url, created["sessionId"], saved)
+        return cls(server_url, created["sessionId"], created["issuer"], saved)
 
-    def __init__(self, server_url, session_id, saved_endpoints):
+    def __init__(self, server_url, session_id, issuer, saved_endpoints):
         self.server_url = server_url
         self.session_id = session_id
+        self.issuer = issuer
         self.saved_endpoints = saved_endpoints
 
     def _control(self, suffix):
         return f"{self.server_url}/__fixture/sessions/{self.session_id}{suffix}"
 
     def load_scenario(self, path):
-        return _request(self._control("/scenario"), "POST", {"path": path})
+        loaded = _request(self._control("/scenario"), "POST", {"path": path})
+        if loaded and loaded.get("issuer"):
+            self.issuer = loaded["issuer"]
+        return loaded
 
     def reset(self):
         return _request(self._control("/reset"), "POST")

@@ -1,0 +1,8 @@
+name: cognito-errors
+responses:
+  - { service: cognito-idp, operation: AdminGetUser, error: { type: NotAuthorizedException, message: fixture error } }
+  - { service: cognito-idp, operation: AdminCreateUser, error: { type: NotAuthorizedException, message: fixture error } }
+  - { service: cognito-idp, operation: AdminUpdateUserAttributes, error: { type: NotAuthorizedException, message: fixture error } }
+  - { service: cognito-idp, operation: ListUsers, error: { type: NotAuthorizedException, message: fixture error } }
+  - { service: cognito-idp, operation: InitiateAuth, error: { type: NotAuthorizedException, message: fixture error } }
+  - { service: cognito-idp, operation: RespondToAuthChallenge, error: { type: NotAuthorizedException, message: fixture error } }

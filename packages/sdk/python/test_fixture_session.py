@@ -53,9 +53,10 @@ class FixtureServerStub:
                     self._respond(201, {
                         "sessionId": "session-1",
                         "endpoint": f"http://{self.headers['Host']}/__fixture/sessions/session-1/aws",
+                        "issuer": f"http://{self.headers['Host']}/__fixture/sessions/session-1/oidc/ap-northeast-1_test",
                     })
                 elif self.path == "/__fixture/sessions/session-1/scenario":
-                    self._respond(200, {"scenario": "happy", "loaded": True})
+                    self._respond(200, {"scenario": "happy", "loaded": True, "issuer": f"http://{self.headers['Host']}/__fixture/sessions/session-1/oidc/ap-northeast-1_test"})
                 elif self.path == "/__fixture/sessions/session-1/reset":
                     self._respond(200, {})
                 else:
@@ -100,13 +101,14 @@ class FixtureSessionTests(unittest.TestCase):
             with FixtureServerStub() as server:
                 fixture = FixtureSession.start(server_url=server.url)
                 self.assertEqual(fixture.session_id, "session-1")
+                self.assertEqual(fixture.issuer, f"{server.url}/__fixture/sessions/session-1/oidc/ap-northeast-1_test")
                 self.assertEqual(
                     os.environ["AWS_ENDPOINT_URL"],
                     f"{server.url}/__fixture/sessions/session-1/aws",
                 )
                 self.assertNotIn("AWS_ENDPOINT_URL_S3", os.environ)
                 self.assertNotIn("AWS_ENDPOINT_URL_FUTURE_SERVICE", os.environ)
-                self.assertEqual(fixture.load_scenario("/scenarios/happy.yml"), {"scenario": "happy", "loaded": True})
+                self.assertEqual(fixture.load_scenario("/scenarios/happy.yml"), {"scenario": "happy", "loaded": True, "issuer": f"{server.url}/__fixture/sessions/session-1/oidc/ap-northeast-1_test"})
                 self.assertEqual(fixture.reset(), {})
                 self.assertEqual(fixture.requests(), [{"service": "s3", "operation": "PutObject"}])
                 self.assertIsNone(fixture.destroy())

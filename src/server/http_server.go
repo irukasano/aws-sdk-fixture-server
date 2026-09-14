@@ -23,19 +23,25 @@ type Config struct {
 }
 
 type fixture struct {
-	mu       sync.Mutex
-	root     string
-	defaults map[string]map[string]string
-	sessions map[string]*session
+	mu              sync.Mutex
+	root            string
+	defaults        map[string]map[string]string
+	defaultScenario *scenario
+	oidc            *oidcConfig
+	sessions        map[string]*session
 }
 type session struct {
+	id       string
+	host     string
 	scenario *scenario
 	sequence map[int]int
 	history  []historyEntry
 }
 type scenario struct {
-	Name      string       `yaml:"name"`
-	Responses []definition `yaml:"responses"`
+	Name        string       `yaml:"name"`
+	UseDefaults bool         `yaml:"use_defaults"`
+	OIDC        *oidcConfig  `yaml:"oidc"`
+	Responses   []definition `yaml:"responses"`
 }
 type definition struct {
 	Service   string         `yaml:"service"`
@@ -66,7 +72,7 @@ type historyEntry struct {
 	ErrorType     string         `json:"errorType,omitempty"`
 }
 
-func NewHandler(c Config) http.Handler {
+func NewHandler(c Config) (http.Handler, error) {
 	root := c.ScenarioRoot
 	if root == "" {
 		root = "/scenarios"
@@ -75,28 +81,143 @@ func NewHandler(c Config) http.Handler {
 	if defaultsRoot == "" {
 		defaultsRoot = "defaults"
 	}
-	return &fixture{root: root, defaults: loadDefaults(defaultsRoot), sessions: map[string]*session{}}
+	if defaultsRoot == "defaults" {
+		defaultsRoot = filepath.Join("..", "..", "defaults")
+	}
+	headers, defaults, oidc, err := loadBundledDefaults(defaultsRoot)
+	if err != nil {
+		return nil, err
+	}
+	return &fixture{root: root, defaults: headers, defaultScenario: defaults, oidc: oidc, sessions: map[string]*session{}}, nil
 }
 
 type defaultsDocument struct {
-	Service string `yaml:"service"`
+	Service  string      `yaml:"service"`
+	Protocol string      `yaml:"protocol"`
+	OIDC     *oidcConfig `yaml:"oidc"`
 	Defaults struct {
-		Response struct { Headers map[string]string `yaml:"headers"` } `yaml:"response"`
+		Response struct {
+			Headers map[string]string `yaml:"headers"`
+		} `yaml:"response"`
 	} `yaml:"defaults"`
 }
 
 func loadDefaults(root string) map[string]map[string]string {
 	result := map[string]map[string]string{}
 	entries, err := os.ReadDir(root)
-	if err != nil { return result }
+	if err != nil {
+		return result
+	}
 	for _, entry := range entries {
-		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".yml") && !strings.HasSuffix(entry.Name(), ".yaml")) { continue }
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".yml") && !strings.HasSuffix(entry.Name(), ".yaml")) {
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(root, entry.Name()))
-		if err != nil { continue }
+		if err != nil {
+			continue
+		}
 		var document defaultsDocument
-		if yaml.Unmarshal(data, &document) == nil && document.Service != "" { result[document.Service] = document.Defaults.Response.Headers }
+		if yaml.Unmarshal(data, &document) == nil && document.Service != "" {
+			result[document.Service] = document.Defaults.Response.Headers
+		}
 	}
 	return result
+}
+
+func loadBundledDefaults(root string) (map[string]map[string]string, *scenario, *oidcConfig, error) {
+	if _, err := os.ReadDir(root); err != nil {
+		return nil, nil, nil, fmt.Errorf("defaults root: %w", err)
+	}
+	configRoot := filepath.Join(root, "config")
+	headers := map[string]map[string]string{}
+	for _, service := range []string{"s3", "secretsmanager", "sqs", "bedrock-runtime", "cognito-idp"} {
+		data, err := os.ReadFile(filepath.Join(configRoot, service+".yml"))
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("required defaults config for %s: %w", service, err)
+		}
+		var document defaultsDocument
+		decoder := yaml.NewDecoder(strings.NewReader(string(data)))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&document); err != nil {
+			return nil, nil, nil, err
+		}
+		if document.Service != service {
+			return nil, nil, nil, fmt.Errorf("defaults config service mismatch for %s", service)
+		}
+		headers[service] = document.Defaults.Response.Headers
+	}
+	var oidcDoc struct {
+		Service  string      `yaml:"service"`
+		Protocol string      `yaml:"protocol"`
+		OIDC     *oidcConfig `yaml:"oidc"`
+	}
+	b, err := os.ReadFile(filepath.Join(root, "config", "cognito-idp.yml"))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("required Cognito defaults config: %w", err)
+	}
+	d := yaml.NewDecoder(strings.NewReader(string(b)))
+	d.KnownFields(true)
+	if err := d.Decode(&oidcDoc); err != nil {
+		return nil, nil, nil, err
+	}
+	if oidcDoc.Service != "cognito-idp" {
+		return nil, nil, nil, fmt.Errorf("Cognito defaults service must be cognito-idp")
+	}
+	if err := validateOIDC(oidcDoc.OIDC, false); err != nil {
+		return nil, nil, nil, err
+	}
+	defaultScenario, err := loadDefaultScenarios(filepath.Join(root, "scenario"))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if defaultScenario != nil {
+		if err := validateJWTTemplates(defaultScenario, oidcDoc.OIDC); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return headers, defaultScenario, oidcDoc.OIDC, nil
+}
+
+func loadDefaultScenarios(root string) (*scenario, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("required default scenario directory is missing")
+		}
+		return nil, err
+	}
+	combined := &scenario{Name: "default"}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".yml") && !strings.HasSuffix(entry.Name(), ".yaml")) {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(root, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var sc scenario
+		d := yaml.NewDecoder(strings.NewReader(string(b)))
+		d.KnownFields(true)
+		if err := d.Decode(&sc); err != nil {
+			return nil, err
+		}
+		for _, def := range sc.Responses {
+			if err := validate(def); err != nil {
+				return nil, err
+			}
+			key := def.Service + "\x00" + def.Operation
+			if seen[key] {
+				return nil, fmt.Errorf("duplicate default definition for %s %s", def.Service, def.Operation)
+			}
+			seen[key] = true
+			combined.Responses = append(combined.Responses, def)
+		}
+	}
+	if len(combined.Responses) == 0 {
+		return nil, fmt.Errorf("default scenarios are required")
+	}
+	return combined, nil
 }
 
 func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +232,9 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	if len(parts) >= 3 && parts[0] == "__fixture" && parts[1] == "sessions" {
 		id := parts[2]
+		if f.oidcRoute(w, r, id, parts[3:]) {
+			return
+		}
 		if len(parts) >= 4 && parts[3] == "aws" {
 			f.aws(w, r, id, "/"+strings.Join(parts[4:], "/"))
 			return
@@ -123,10 +247,11 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (f *fixture) create(w http.ResponseWriter, r *http.Request) {
 	id := uuid4()
+	s := &session{id: id, host: r.Host, sequence: map[int]int{}}
 	f.mu.Lock()
-	f.sessions[id] = &session{sequence: map[int]int{}}
+	f.sessions[id] = s
 	f.mu.Unlock()
-	writeJSON(w, http.StatusCreated, map[string]string{"sessionId": id, "endpoint": "http://" + r.Host + "/__fixture/sessions/" + id + "/aws"})
+	writeJSON(w, http.StatusCreated, map[string]string{"sessionId": id, "endpoint": "http://" + r.Host + "/__fixture/sessions/" + id + "/aws", "issuer": f.issuer(s, f.sessionOIDC(s))})
 }
 func (f *fixture) control(w http.ResponseWriter, r *http.Request, id string, tail []string) {
 	f.mu.Lock()
@@ -172,7 +297,7 @@ func (f *fixture) control(w http.ResponseWriter, r *http.Request, id string, tai
 		s.sequence = map[int]int{}
 		s.history = nil
 		f.mu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]any{"scenario": sc.Name, "loaded": true})
+		writeJSON(w, http.StatusOK, map[string]any{"scenario": sc.Name, "loaded": true, "issuer": f.issuer(s, f.sessionOIDC(s))})
 	case "reset":
 		if r.Method != http.MethodPost {
 			controlError(w, http.StatusNotFound, "NOT_FOUND", "control route not found")
@@ -231,6 +356,12 @@ func (f *fixture) load(p string) (*scenario, int, error) {
 		if err := validate(def); err != nil {
 			return nil, http.StatusBadRequest, err
 		}
+	}
+	if err := validateOIDC(mergeOIDC(f.oidc, sc.OIDC), false); err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	if err := validateJWTTemplates(&sc, mergeOIDC(f.oidc, sc.OIDC)); err != nil {
+		return nil, http.StatusBadRequest, err
 	}
 	return &sc, http.StatusOK, nil
 }
@@ -304,13 +435,26 @@ func (f *fixture) aws(w http.ResponseWriter, r *http.Request, id, stripped strin
 	}
 	service, op, params := normalize(r, stripped)
 	f.mu.Lock()
-	if s.scenario == nil {
+	active := s.scenario
+	if active == nil {
+		active = f.defaultScenario
+	}
+	if active == nil {
 		f.record(s, service, op, params, r, http.StatusInternalServerError, "unexpected", -1, "")
 		f.mu.Unlock()
 		f.awsError(w, r, http.StatusInternalServerError, "UNEXPECTED_AWS_REQUEST", "no matching fixture")
 		return
 	}
-	for i, d := range s.scenario.Responses {
+	matchedNormalDefinition := false
+	if s.scenario != nil {
+		for _, d := range s.scenario.Responses {
+			if d.Service == service && d.Operation == op {
+				matchedNormalDefinition = true
+				break
+			}
+		}
+	}
+	for i, d := range active.Responses {
 		if d.Service == service && d.Operation == op && matches(d.Match, params) {
 			res, idx := pick(d, s.sequence, i)
 			if res.Error != nil {
@@ -325,8 +469,43 @@ func (f *fixture) aws(w http.ResponseWriter, r *http.Request, id, stripped strin
 			}
 			f.record(s, service, op, params, r, http.StatusOK, "response", idx, "")
 			f.mu.Unlock()
-			f.awsResponse(w, r, service, res.Response)
+			data := res.Response
+			if service == "cognito-idp" {
+				var err error
+				data, err = f.renderCognitoTokens(data, s, fmt.Sprint(params["ClientId"]))
+				if err != nil {
+					f.awsError(w, r, http.StatusInternalServerError, "INVALID_JWT_TEMPLATE", err.Error())
+					return
+				}
+			}
+			f.awsResponse(w, r, service, data)
 			return
+		}
+	}
+	if s.scenario != nil && s.scenario.UseDefaults && !matchedNormalDefinition && f.defaultScenario != nil {
+		for i, d := range f.defaultScenario.Responses {
+			if d.Service == service && d.Operation == op && matches(d.Match, params) {
+				res, idx := pick(d, s.sequence, 100000+i)
+				if res.Error != nil {
+					f.record(s, service, op, params, r, res.Error.Status, "error", idx, res.Error.Type)
+					f.mu.Unlock()
+					f.awsError(w, r, res.Error.Status, res.Error.Type, res.Error.Message)
+					return
+				}
+				f.record(s, service, op, params, r, http.StatusOK, "response", idx, "")
+				f.mu.Unlock()
+				data := res.Response
+				if service == "cognito-idp" {
+					var err error
+					data, err = f.renderCognitoTokens(data, s, fmt.Sprint(params["ClientId"]))
+					if err != nil {
+						f.awsError(w, r, 500, "INVALID_JWT_TEMPLATE", err.Error())
+						return
+					}
+				}
+				f.awsResponse(w, r, service, data)
+				return
+			}
 		}
 	}
 	f.record(s, service, op, params, r, http.StatusInternalServerError, "unexpected", -1, "")
@@ -357,6 +536,9 @@ func normalize(r *http.Request, path string) (string, string, map[string]any) {
 		svc := strings.ToLower(a[0])
 		if svc == "amazonsqs" {
 			svc = "sqs"
+		}
+		if svc == "awscognitoidentityproviderservice" {
+			svc = "cognito-idp"
 		}
 		return svc, a[len(a)-1], p
 	}
@@ -448,7 +630,7 @@ func (f *fixture) awsResponse(w http.ResponseWriter, r *http.Request, svc string
 	}
 	if svc == "secretsmanager" {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	} else if svc == "sqs" {
+	} else if svc == "sqs" || svc == "cognito-idp" {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.0")
 	} else {
 		w.Header().Set("Content-Type", "application/json")

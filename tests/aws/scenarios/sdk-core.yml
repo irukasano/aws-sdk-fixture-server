@@ -1,4 +1,5 @@
 name: sdk-core
+use_defaults: true
 responses:
   - service: secretsmanager
     operation: GetSecretValue

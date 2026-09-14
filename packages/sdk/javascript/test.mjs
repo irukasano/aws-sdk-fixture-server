@@ -57,12 +57,13 @@ test("FixtureSession controls a session and restores every endpoint variable", a
         response.end(JSON.stringify({
           sessionId: "session-1",
           endpoint: `http://${request.headers.host}/__fixture/sessions/session-1/aws`,
+          issuer: `http://${request.headers.host}/__fixture/sessions/session-1/oidc/ap-northeast-1_test`,
         }));
         return;
       }
       if (request.method === "POST" && request.url === "/__fixture/sessions/session-1/scenario") {
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ scenario: "happy", loaded: true }));
+        response.end(JSON.stringify({ scenario: "happy", loaded: true, issuer: `http://${request.headers.host}/__fixture/sessions/session-1/oidc/ap-northeast-1_test` }));
         return;
       }
       if (request.method === "POST" && request.url === "/__fixture/sessions/session-1/reset") {
@@ -82,6 +83,7 @@ test("FixtureSession controls a session and restores every endpoint variable", a
     }, async (serverUrl) => {
       const fixture = await FixtureSession.start({ serverUrl });
       assert.equal(fixture.sessionId, "session-1");
+      assert.equal(fixture.issuer, `${serverUrl}/__fixture/sessions/session-1/oidc/ap-northeast-1_test`);
       assert.equal(process.env.AWS_ENDPOINT_URL, `${serverUrl}/__fixture/sessions/session-1/aws`);
       assert.equal(process.env.AWS_ENDPOINT_URL_S3, undefined);
       assert.equal(process.env.AWS_ENDPOINT_URL_FUTURE_SERVICE, undefined);
@@ -137,6 +139,7 @@ test("FixtureSession.destroy restores endpoint variables even when deletion fail
         response.end(JSON.stringify({
           sessionId: "session-2",
           endpoint: `http://${request.headers.host}/__fixture/sessions/session-2/aws`,
+          issuer: `http://${request.headers.host}/__fixture/sessions/session-2/oidc/ap-northeast-1_test`,
         }));
         return;
       }

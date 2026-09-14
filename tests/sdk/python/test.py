@@ -2,6 +2,7 @@ import os
 import urllib.request
 
 import boto3
+import pytest
 
 from fixture_session import FixtureSession
 
@@ -38,10 +39,25 @@ def test_application_sdk_client_uses_fixture_session_endpoint():
         )
         assert b"fixture response" in invoke_result["body"].read()
 
+        cognito = boto3.client("cognito-idp")
+        calls = [
+            lambda: cognito.admin_get_user(UserPoolId="pool", Username="fixture-user"),
+            lambda: cognito.admin_create_user(UserPoolId="pool", Username="fixture-user"),
+            lambda: cognito.admin_update_user_attributes(UserPoolId="pool", Username="fixture-user", UserAttributes=[]),
+            lambda: cognito.list_users(UserPoolId="pool"),
+            lambda: cognito.initiate_auth(ClientId="client", AuthFlow="USER_PASSWORD_AUTH", AuthParameters={"USERNAME": "fixture-user", "PASSWORD": "fixture-password"}),
+            lambda: cognito.respond_to_auth_challenge(ClientId="client", ChallengeName="PASSWORD_VERIFIER", ChallengeResponses={"USERNAME": "fixture-user", "PASSWORD_CLAIM_SIGNATURE": "fixture-signature"}),
+        ]
+        for call in calls:
+            call()
         history = fixture.requests()
         assert any(
             item["service"] == "s3" and item["operation"] == "PutObject"
             for item in history
         )
+        fixture.load_scenario("/scenarios/cognito-errors.yml")
+        for call in calls:
+            with pytest.raises(cognito.exceptions.NotAuthorizedException):
+                call()
     finally:
         fixture.destroy()
