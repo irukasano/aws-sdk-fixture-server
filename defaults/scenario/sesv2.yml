@@ -1,0 +1,3 @@
+name: default-sesv2
+responses:
+  - { service: sesv2, operation: SendEmail, response: { MessageId: fixture-message } }
